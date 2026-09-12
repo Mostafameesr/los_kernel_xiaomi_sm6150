@@ -40,6 +40,14 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
+      - name: Configure Git identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config commit.gpgsign false
+
       - name: Safety guards and baseline audit
         id: baseline
         shell: bash
@@ -182,11 +190,17 @@ jobs:
 
             # Never guess through a conflict in networking lifetime code.
             if [[ -f .git/CHERRY_PICK_HEAD ]]; then
+              mapfile -t UNMERGED < <(git diff --name-only --diff-filter=U)
               {
                 echo
-                echo "CONFLICT while applying $c $subject"
+                if (( ${#UNMERGED[@]} > 0 )); then
+                  echo "CONTENT CONFLICT while applying $c $subject"
+                  printf 'unmerged: %s\n' "${UNMERGED[@]}"
+                else
+                  echo "CHERRY-PICK FAILED without a content conflict while applying $c $subject"
+                  echo "This usually means repository/identity/configuration failure."
+                fi
                 git status --short
-                git diff --name-only --diff-filter=U
               } | tee -a applied-upstream-fixes.txt
               git cherry-pick --abort || true
             fi
@@ -475,6 +489,9 @@ jobs:
           set -euo pipefail
 
           git diff --check "${{ steps.baseline.outputs.base_sha }}..HEAD"
+
+          test "$(git config user.name)" = "github-actions[bot]"
+          test "$(git config user.email)" = "41898282+github-actions[bot]@users.noreply.github.com"
 
           if grep -RInE '^(<<<<<<<|=======|>>>>>>>)' net/tipc include/uapi/linux/tipc.h; then
             echo "::error::Conflict marker found"
