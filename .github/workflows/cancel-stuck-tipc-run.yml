@@ -14,15 +14,18 @@ jobs:
     if: ${{ github.actor != 'github-actions[bot]' }}
     runs-on: ubuntu-latest
     steps:
-      - name: Cancel stale run 34707307223
+      - name: Cancel stale superseded runs
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          status="$(gh api "repos/$REPO/actions/runs/34707307223" --jq .status)"
-          if [[ "$status" == "queued" || "$status" == "in_progress" || "$status" == "pending" || "$status" == "waiting" || "$status" == "requested" ]]; then
-            gh api --method POST "repos/$REPO/actions/runs/34707307223/cancel"
-          else
-            echo "stale run already finished: $status"
-          fi
+          for run_id in 34707307223 34707442413; do
+            status="$(gh api "repos/$REPO/actions/runs/$run_id" --jq .status)"
+            if [[ "$status" == "queued" || "$status" == "in_progress" || "$status" == "pending" || "$status" == "waiting" || "$status" == "requested" ]]; then
+              echo "Cancelling stale run $run_id ($status)"
+              gh api --method POST "repos/$REPO/actions/runs/$run_id/cancel"
+            else
+              echo "stale run $run_id already finished: $status"
+            fi
+          done
