@@ -43,7 +43,8 @@ struct tipc_member;
 struct tipc_msg;
 
 struct tipc_group *tipc_group_create(struct net *net, u32 portid,
-				     struct tipc_group_req *mreq);
+				     struct tipc_group_req *mreq,
+				     bool *group_is_open);
 void tipc_group_delete(struct net *net, struct tipc_group *grp);
 void tipc_group_add_member(struct tipc_group *grp, u32 node, u32 port);
 struct tipc_nlist *tipc_group_dests(struct tipc_group *grp);
