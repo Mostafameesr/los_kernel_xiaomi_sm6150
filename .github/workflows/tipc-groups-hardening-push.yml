@@ -1,14 +1,13 @@
-name: TIPC Groups hardening AUTO (TIPC_GROUPS)
+name: TIPC Groups hardening AUTO v2 (TIPC_GROUPS)
 
-# AUTO-RUN: adding/updating this file on TIPC_GROUPS starts the workflow.
-# The workflow later pushes only kernel source changes, so the paths filter
-# prevents a self-trigger loop.
+# AUTO-RUN: every user push to TIPC_GROUPS starts this workflow.
+# No paths filter: the filename can be anything under .github/workflows/.
+# Pushes made by this workflow use GITHUB_TOKEN; GitHub does not recursively
+# trigger new workflow runs from that token.
 on:
   push:
     branches:
       - TIPC_GROUPS
-    paths:
-      - ".github/workflows/tipc-groups-hardening.yml"
 
 permissions:
   contents: write
@@ -25,6 +24,7 @@ env:
 jobs:
   harden:
     name: Harden TIPC Groups and verify
+    if: ${{ github.actor != 'github-actions[bot]' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
 
