@@ -1,0 +1,28 @@
+name: Cancel stuck TIPC hardening runner
+
+on:
+  push:
+    branches:
+      - TIPC_GROUPS
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cancel-stuck-run:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cancel stale run 34707307223
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          status="$(gh api "repos/$REPO/actions/runs/34707307223" --jq .status)"
+          if [[ "$status" == "queued" || "$status" == "in_progress" || "$status" == "pending" || "$status" == "waiting" || "$status" == "requested" ]]; then
+            gh api --method POST "repos/$REPO/actions/runs/34707307223/cancel"
+          else
+            echo "stale run already finished: $status"
+          fi
