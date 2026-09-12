@@ -99,6 +99,7 @@ struct tipc_group {
 	u16 max_active;
 	u16 bc_snd_nxt;
 	u16 bc_ackers;
+	bool *open;		/* readiness lives in struct tipc_sock */
 	bool loopback;
 	bool events;
 };
@@ -160,7 +161,8 @@ int tipc_group_size(struct tipc_group *grp)
 }
 
 struct tipc_group *tipc_group_create(struct net *net, u32 portid,
-				     struct tipc_group_req *mreq)
+				     struct tipc_group_req *mreq,
+				     bool *group_is_open)
 {
 	struct tipc_group *grp;
 	u32 type = mreq->type;
@@ -182,7 +184,9 @@ struct tipc_group *tipc_group_create(struct net *net, u32 portid,
 	grp->scope = mreq->scope;
 	grp->loopback = mreq->flags & TIPC_GROUP_LOOPBACK;
 	grp->events = mreq->flags & TIPC_GROUP_MEMBER_EVTS;
+	grp->open = group_is_open;
 	if (tipc_topsrv_kern_subscr(net, portid, type, 0, ~0, &grp->subid))
+		WRITE_ONCE(*grp->open, false);
 		return grp;
 	kfree(grp);
 	return NULL;
@@ -190,6 +194,7 @@ struct tipc_group *tipc_group_create(struct net *net, u32 portid,
 
 void tipc_group_delete(struct net *net, struct tipc_group *grp)
 {
+	WRITE_ONCE(*grp->open, false);
 	struct rb_root *tree = &grp->members;
 	struct tipc_member *m, *tmp;
 	struct sk_buff_head xmitq;
@@ -198,6 +203,7 @@ void tipc_group_delete(struct net *net, struct tipc_group *grp)
 
 	rbtree_postorder_for_each_entry_safe(m, tmp, tree, tree_node) {
 		tipc_group_proto_xmit(grp, m, GRP_LEAVE_MSG, &xmitq);
+		__skb_queue_purge(&m->deferredq);
 		list_del(&m->list);
 		kfree(m);
 	}
@@ -252,7 +258,7 @@ static struct tipc_member *tipc_group_find_node(struct tipc_group *grp,
 	return NULL;
 }
 
-static void tipc_group_add_to_tree(struct tipc_group *grp,
+static int tipc_group_add_to_tree(struct tipc_group *grp,
 				   struct tipc_member *m)
 {
 	u64 nkey, key = (u64)m->node << 32 | m->port;
@@ -270,10 +276,11 @@ static void tipc_group_add_to_tree(struct tipc_group *grp,
 		else if (key > nkey)
 			n = &(*n)->rb_right;
 		else
-			return;
+			return -EEXIST;
 	}
 	rb_link_node(&m->tree_node, parent, n);
 	rb_insert_color(&m->tree_node, &grp->members);
+	return 0;
 }
 
 static struct tipc_member *tipc_group_create_member(struct tipc_group *grp,
@@ -281,6 +288,7 @@ static struct tipc_member *tipc_group_create_member(struct tipc_group *grp,
 						    int state)
 {
 	struct tipc_member *m;
+	int ret;
 
 	m = kzalloc(sizeof(*m), GFP_ATOMIC);
 	if (!m)
@@ -292,8 +300,13 @@ static struct tipc_member *tipc_group_create_member(struct tipc_group *grp,
 	m->node = node;
 	m->port = port;
 	m->bc_acked = grp->bc_snd_nxt - 1;
+	ret = tipc_group_add_to_tree(grp, m);
+	if (ret < 0) {
+		kfree(m);
+		return NULL;
+	}
 	grp->member_cnt++;
-	tipc_group_add_to_tree(grp, m);
+	WRITE_ONCE(*grp->open, true);
 	tipc_nlist_add(&grp->dests, m->node);
 	m->state = state;
 	return m;
@@ -309,6 +322,8 @@ static void tipc_group_delete_member(struct tipc_group *grp,
 {
 	rb_erase(&m->tree_node, &grp->members);
 	grp->member_cnt--;
+	if (!grp->member_cnt)
+		WRITE_ONCE(*grp->open, false);
 
 	/* Check if we were waiting for replicast ack from this member */
 	if (grp->bc_ackers && less(m->bc_acked, grp->bc_snd_nxt - 1))
@@ -674,6 +689,7 @@ void tipc_group_proto_rcv(struct tipc_group *grp, bool *usr_wakeup,
 	struct tipc_member *m, *pm;
 	struct tipc_msg *ehdr;
 	u16 remitted, in_flight;
+	u16 acked;
 
 	if (!grp)
 		return;
@@ -736,7 +752,10 @@ void tipc_group_proto_rcv(struct tipc_group *grp, bool *usr_wakeup,
 	case GRP_ACK_MSG:
 		if (!m)
 			return;
-		m->bc_acked = msg_grp_bc_acked(hdr);
+		acked = msg_grp_bc_acked(hdr);
+		if (less_eq(acked, m->bc_acked))
+			return;
+		m->bc_acked = acked;
 		if (--grp->bc_ackers)
 			break;
 		*usr_wakeup = true;
