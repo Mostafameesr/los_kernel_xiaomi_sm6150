@@ -20,7 +20,7 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          for run_id in 34707307223 34707442413; do
+          for run_id in 34707307223 34707442413 34707498537; do
             status="$(gh api "repos/$REPO/actions/runs/$run_id" --jq .status)"
             if [[ "$status" == "queued" || "$status" == "in_progress" || "$status" == "pending" || "$status" == "waiting" || "$status" == "requested" ]]; then
               echo "Cancelling stale run $run_id ($status)"
