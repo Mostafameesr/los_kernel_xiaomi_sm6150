@@ -64,6 +64,7 @@ MODULE_PARM_DESC(outstanding_low, "Outstanding low");
 #define HEADROOM_FOR_QMAP   8 /* for mux header */
 #define TAILROOM            0 /* for padding by mux layer */
 #define MAX_NUM_OF_MUX_CHANNEL  15 /* max mux channels */
+#define RMNET_IOCTL_SET_MTU_COMPAT 0x20 /* Spring NICM extension */
 #define UL_FILTER_RULE_HANDLE_START 69
 
 #define IPA_WWAN_DEV_NAME "rmnet_ipa%d"
@@ -138,6 +139,17 @@ struct ipa3_wwan_private {
 	struct napi_struct napi;
 };
 
+/*
+ * Spring NICM uses RMNET_IOCTL_EXTENDED (0x89FD), subcommand 0x20,
+ * with a 20-byte payload: interface[16] + MTU v4 + MTU v6.
+ * Keep this definition local so the legacy Sweet UAPI/ABI is unchanged.
+ */
+struct spring_nicm_mtu_params {
+	s8 if_name[IFNAMSIZ];
+	u16 mtu_v4;
+	u16 mtu_v6;
+};
+
 struct rmnet_ipa3_context {
 	struct ipa3_wwan_private *wwan_priv;
 	struct ipa_sys_connect_params apps_to_ipa_ep_cfg;
@@ -146,6 +158,8 @@ struct rmnet_ipa3_context {
 	u32 dflt_v4_wan_rt_hdl;
 	u32 dflt_v6_wan_rt_hdl;
 	struct ipa3_rmnet_mux_val mux_channel[MAX_NUM_OF_MUX_CHANNEL];
+	u16 nicm_mtu_v4[MAX_NUM_OF_MUX_CHANNEL];
+	u16 nicm_mtu_v6[MAX_NUM_OF_MUX_CHANNEL];
 	int num_q6_rules;
 	int old_num_q6_rules;
 	int rmnet_index;
@@ -2131,6 +2145,46 @@ static int ipa3_wwan_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 				ext_ioctl_data.u.offload_params.mux_id,
 				tcp_en || udp_en, tcp_en, udp_en);
 			break;
+		case RMNET_IOCTL_SET_MTU_COMPAT: {
+			struct spring_nicm_mtu_params mtu;
+			char if_name[IFNAMSIZ];
+			int index;
+
+			/* The legacy extended ioctl union is large enough (20 bytes). */
+			BUILD_BUG_ON(sizeof(mtu) > sizeof(ext_ioctl_data.u));
+			memcpy(&mtu, &ext_ioctl_data.u, sizeof(mtu));
+			memcpy(if_name, mtu.if_name, IFNAMSIZ);
+			if_name[IFNAMSIZ - 1] = '\0';
+
+			index = find_vchannel_name_index(if_name);
+			if (index == MAX_NUM_OF_MUX_CHANNEL) {
+				IPAWANERR("Spring NICM MTU: no mux channel for %s\n",
+					if_name);
+				rc = -ENODEV;
+				break;
+			}
+
+			/* Match Spring partial-update semantics: zero means keep old. */
+			if (mtu.mtu_v4)
+				rmnet_ipa3_ctx->nicm_mtu_v4[index] = mtu.mtu_v4;
+			if (mtu.mtu_v6)
+				rmnet_ipa3_ctx->nicm_mtu_v6[index] = mtu.mtu_v6;
+
+			IPAWANINFO(
+				"Spring NICM MTU compat: if=%s v4=%u v6=%u\n",
+				if_name,
+				(unsigned int)rmnet_ipa3_ctx->nicm_mtu_v4[index],
+				(unsigned int)rmnet_ipa3_ctx->nicm_mtu_v6[index]);
+
+			/*
+			 * Do not emit Spring's IPA_SET_MTU userspace event here.
+			 * The running userspace is Sweet IPACM, whose event namespace
+			 * predates that Spring event. Returning success is the ABI
+			 * translation needed by Spring NICM on the Sweet IPA stack.
+			 */
+			rc = 0;
+			break;
+		}
 		default:
 			IPAWANERR("[%s] unsupported extended cmd[%d]",
 				dev->name,
