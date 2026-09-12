@@ -185,20 +185,21 @@ struct tipc_group *tipc_group_create(struct net *net, u32 portid,
 	grp->loopback = mreq->flags & TIPC_GROUP_LOOPBACK;
 	grp->events = mreq->flags & TIPC_GROUP_MEMBER_EVTS;
 	grp->open = group_is_open;
-	if (tipc_topsrv_kern_subscr(net, portid, type, 0, ~0, &grp->subid))
+	if (tipc_topsrv_kern_subscr(net, portid, type, 0, ~0, &grp->subid)) {
 		WRITE_ONCE(*grp->open, false);
 		return grp;
+	}
 	kfree(grp);
 	return NULL;
 }
 
 void tipc_group_delete(struct net *net, struct tipc_group *grp)
 {
-	WRITE_ONCE(*grp->open, false);
 	struct rb_root *tree = &grp->members;
 	struct tipc_member *m, *tmp;
 	struct sk_buff_head xmitq;
 
+	WRITE_ONCE(*grp->open, false);
 	__skb_queue_head_init(&xmitq);
 
 	rbtree_postorder_for_each_entry_safe(m, tmp, tree, tree_node) {
