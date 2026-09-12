@@ -1,0 +1,126 @@
+name: TIPC Groups Backport
+
+on:
+  push:
+    branches:
+      - TIPC_GROUPS
+    paths:
+      - .github/workflows/tipc-groups-backport.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  backport:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout target branch
+        uses: actions/checkout@v4
+        with:
+          ref: TIPC_GROUPS
+          fetch-depth: 0
+
+      - name: Apply upstream TIPC communication groups series
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BASE_SHA="$(git rev-parse HEAD)"
+          START_SHA="14c04493cb77bc38404dbcb39d5ccbb667831ad7"
+          END_SHA="04d7b574b245c66001a33cb9da2c0311063af73f"
+
+          FIXES=(
+            36c0a9dfc6613242ba1de012e2d15145cdaae805
+            cb4dc41eaad0cb336bb5ddd379ae0d2cc89cb62b
+            e233df01576bba9f5bafacccd571353b72152bd5
+            e0e853ac036f76fcad3995554b8b6cef555b010f
+            2e724dca7749223204bbae21745c0e3fc932700a
+            672ecbe1c977616aa720c9397589665b33e72610
+          )
+
+          git config user.name "DNA TIPC Backport"
+          git config user.email "tipc-backport@users.noreply.github.com"
+          git remote remove linux-upstream 2>/dev/null || true
+          git remote add linux-upstream https://github.com/torvalds/linux.git
+
+          rm -f /tmp/tipc-backport-report.txt /tmp/tipc-conflicts.diff
+          {
+            echo "base_sha=$BASE_SHA"
+            echo "branch=$(git branch --show-current)"
+            echo "kernel=$(grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL) =' Makefile | tr '\n' ' ')"
+          } | tee /tmp/tipc-backport-report.txt
+
+          git fetch --no-tags linux-upstream "$END_SHA"
+          if ! git cat-file -e "$START_SHA^{commit}" 2>/dev/null; then
+            git fetch --no-tags --deepen=512 linux-upstream "$END_SHA"
+          fi
+
+          for fix in "${FIXES[@]}"; do
+            git fetch --no-tags linux-upstream "$fix"
+          done
+
+          set +e
+          git cherry-pick "$START_SHA^..$END_SHA"
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            {
+              echo "stage=base_series"
+              echo "result=conflict"
+              echo "--- status ---"
+              git status --short
+              echo "--- unmerged ---"
+              git diff --name-only --diff-filter=U
+            } | tee -a /tmp/tipc-backport-report.txt
+            git diff > /tmp/tipc-conflicts.diff || true
+            exit 20
+          fi
+
+          for fix in "${FIXES[@]}"; do
+            set +e
+            git cherry-pick "$fix"
+            rc=$?
+            set -e
+            if [ "$rc" -ne 0 ]; then
+              {
+                echo "stage=fix:$fix"
+                echo "result=conflict"
+                echo "--- status ---"
+                git status --short
+                echo "--- unmerged ---"
+                git diff --name-only --diff-filter=U
+              } | tee -a /tmp/tipc-backport-report.txt
+              git diff > /tmp/tipc-conflicts.diff || true
+              exit 21
+            fi
+          done
+
+          {
+            echo "result=clean"
+            echo "head=$(git rev-parse HEAD)"
+            echo "--- ABI ---"
+            grep -n "TIPC_GROUP_JOIN" include/uapi/linux/tipc.h
+            grep -n "TIPC_GROUP_LEAVE" include/uapi/linux/tipc.h
+            grep -n "struct tipc_group_req" include/uapi/linux/tipc.h
+            echo "--- implementation ---"
+            test -f net/tipc/group.c && echo "group.c=present"
+            test -f net/tipc/group.h && echo "group.h=present"
+            grep -n "group.o" net/tipc/Makefile
+            grep -n "case TIPC_GROUP_JOIN" net/tipc/socket.c
+            grep -n "tipc_send_group_bcast" net/tipc/socket.c | head
+            echo "--- diff stat ---"
+            git diff --stat "$BASE_SHA..HEAD"
+          } | tee -a /tmp/tipc-backport-report.txt
+
+          git push origin HEAD:TIPC_GROUPS
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tipc-groups-backport-report
+          if-no-files-found: ignore
+          path: |
+            /tmp/tipc-backport-report.txt
+            /tmp/tipc-conflicts.diff
