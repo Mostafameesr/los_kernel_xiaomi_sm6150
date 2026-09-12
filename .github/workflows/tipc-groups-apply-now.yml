@@ -1,0 +1,322 @@
+name: TIPC Groups apply now
+
+on:
+  push:
+    branches:
+      - TIPC_GROUPS
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tipc-groups-apply-now-${{ github.repository }}
+  cancel-in-progress: true
+
+env:
+  TARGET_BRANCH: TIPC_GROUPS
+  UPSTREAM_REPO: https://github.com/torvalds/linux.git
+
+jobs:
+  apply:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Shallow checkout TIPC_GROUPS
+        uses: actions/checkout@v4
+        with:
+          ref: TIPC_GROUPS
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Guard exact starting refs
+        id: guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git branch --show-current)" == "$TARGET_BRANCH" ]]
+          BASE="$(git rev-parse HEAD)"
+          git fetch --no-tags origin stable "$TARGET_BRANCH"
+          STABLE="$(git rev-parse refs/remotes/origin/stable)"
+          REMOTE_TIPC="$(git rev-parse refs/remotes/origin/$TARGET_BRANCH)"
+          [[ "$REMOTE_TIPC" == "$BASE" ]]
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
+          echo "stable=$STABLE" >> "$GITHUB_OUTPUT"
+          grep -q 'skb_queue_empty_lockless' net/tipc/socket.c
+          grep -Eq '#define[[:space:]]+TIPC_GROUP_JOIN[[:space:]]+135' include/uapi/linux/tipc.h
+          grep -Eq '#define[[:space:]]+TIPC_GROUP_LEAVE[[:space:]]+136' include/uapi/linux/tipc.h
+
+      - name: Configure git
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config commit.gpgsign false
+          git remote add upstream "$UPSTREAM_REPO" 2>/dev/null || git remote set-url upstream "$UPSTREAM_REPO"
+
+      - name: Apply reviewed pre-refactor correctness fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          FIXES=(
+            234833991e14681f61cbfd93e65a5c976089cf11
+            3f42f5fe31c8715a34064bfd7b788488d1ea2f7c
+            3db096011722fd8717e57687ae94b6917a11c9cc
+            bb25c3855a12cc58e33cd7ee9b69943790fe35f7
+            0a3d805c9c503e05d6e5d3868c53e92a06589dcf
+            3a33a19bf88cdfc6d982972bc6ffcf7a62c1015e
+            f9c935db8086231a35b7f5c2a53e3f1e10f388ee
+          )
+          for c in "${FIXES[@]}"; do
+            git fetch --no-tags upstream "$c"
+            if ! git cherry-pick -x "$c"; then
+              git status --short
+              git cherry-pick --abort || true
+              echo "::error::Conflict in reviewed upstream fix $c; refusing to guess"
+              exit 1
+            fi
+          done
+
+      - name: Apply confirmed lifetime and teardown fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          sp = Path('net/tipc/socket.c')
+          gp = Path('net/tipc/group.c')
+          hp = Path('net/tipc/group.h')
+          vp = Path('net/tipc/server.c')
+          s, g, h, v = sp.read_text(), gp.read_text(), hp.read_text(), vp.read_text()
+
+          def one(text, old, new, label):
+              n = text.count(old)
+              if n != 1:
+                  raise SystemExit(f'{label}: expected exactly 1 match, found {n}')
+              return text.replace(old, new, 1)
+
+          # c75e427d9349: tipc_alloc_conn() returns ERR_PTR on failure.
+          old = '\tcon = tipc_alloc_conn(tipc_topsrv(net));\n\tif (!con)\n\t\treturn false;\n\n\t*conid = con->conid;\n'
+          new = '\tcon = tipc_alloc_conn(tipc_topsrv(net));\n\tif (IS_ERR(con))\n\t\treturn false;\n\n\t*conid = con->conid;\n'
+          v = one(v, old, new, 'ERR_PTR handling')
+
+          # 777ecaabd614: initialize the complete topology subscription handle.
+          v = one(v, '\t*(u32 *)&sub.usr_handle = port;\n', '\t*(u64 *)&sub.usr_handle = (u64)port;\n', 'usr_handle initialization')
+
+          # 5cf02612b33f: purge deferred skb queue before member destruction.
+          old = '\t\ttipc_group_proto_xmit(grp, m, GRP_LEAVE_MSG, &xmitq);\n\t\tlist_del(&m->list);\n'
+          new = '\t\ttipc_group_proto_xmit(grp, m, GRP_LEAVE_MSG, &xmitq);\n\t\t__skb_queue_purge(&m->deferredq);\n\t\tlist_del(&m->list);\n'
+          g = one(g, old, new, 'deferredq purge')
+
+          # bb3a420d47ab: reject duplicate RB key before changing group counts/dests.
+          st = g.index('static void tipc_group_add_to_tree')
+          en = g.index('\n}\n\nstatic struct tipc_member *tipc_group_create_member', st) + 3
+          fn = g[st:en]
+          fn = fn.replace('static void tipc_group_add_to_tree', 'static int tipc_group_add_to_tree', 1)
+          fn = one(fn, '\t\telse\n\t\t\treturn;\n', '\t\telse\n\t\t\treturn -EEXIST;\n', 'duplicate member RB return')
+          fn = one(fn, '\trb_insert_color(&m->tree_node, &grp->members);\n}', '\trb_insert_color(&m->tree_node, &grp->members);\n\treturn 0;\n}', 'RB insert success')
+          g = g[:st] + fn + g[en:]
+
+          st = g.index('static struct tipc_member *tipc_group_create_member')
+          en = g.index('\n}\n\nvoid tipc_group_add_member', st) + 3
+          cm = g[st:en]
+          cm = one(cm, '\tstruct tipc_member *m;\n', '\tstruct tipc_member *m;\n\tint ret;\n', 'member insert result')
+          old = '\tm->bc_acked = grp->bc_snd_nxt - 1;\n\tgrp->member_cnt++;\n\ttipc_group_add_to_tree(grp, m);\n'
+          new = '\tm->bc_acked = grp->bc_snd_nxt - 1;\n\tret = tipc_group_add_to_tree(grp, m);\n\tif (ret < 0) {\n\t\tkfree(m);\n\t\treturn NULL;\n\t}\n\tgrp->member_cnt++;\n'
+          cm = one(cm, old, new, 'duplicate member cleanup')
+          g = g[:st] + cm + g[en:]
+
+          # 48a5fe38772b: duplicate/stale group ACKs must be idempotent.
+          st = g.index('void tipc_group_proto_rcv(')
+          en = g.index('\n}\n\n/* tipc_group_member_evt', st) + 3
+          pr = g[st:en]
+          pr = one(pr, '\tu16 remitted, in_flight;\n', '\tu16 remitted, in_flight;\n\tu16 acked;\n', 'ACK local')
+          old = '\t\tm->bc_acked = msg_grp_bc_acked(hdr);\n\t\tif (--grp->bc_ackers)\n\t\t\tbreak;\n'
+          new = '\t\tacked = msg_grp_bc_acked(hdr);\n\t\tif (less_eq(acked, m->bc_acked))\n\t\t\treturn;\n\t\tm->bc_acked = acked;\n\t\tif (--grp->bc_ackers)\n\t\t\tbreak;\n'
+          pr = one(pr, old, new, 'duplicate ACK guard')
+          g = g[:st] + pr + g[en:]
+
+          # 143ece: do not retain tsk->group across release_sock() in unicast.
+          st = s.index('static int tipc_send_group_unicast(')
+          en = s.index('\n}\n', st) + 3
+          fn = s[st:en]
+          fn = one(fn, '\tstruct tipc_group *grp = tsk->group;\n', '', 'unicast cached group')
+          fn = one(fn,
+                   '\t\t\t\t!tipc_group_cong(grp, node, port, blks, &mb));\n',
+                   '\t\t\t\ttsk->group &&\n\t\t\t\t!tipc_group_cong(tsk->group, node, port, blks, &mb));\n',
+                   'unicast live group check')
+          s = s[:st] + fn + s[en:]
+
+          # 143ece: anycast reloads tsk->group after every wait/loop.
+          st = s.index('static int tipc_send_group_anycast(')
+          en = s.index('\n}\n', st) + 3
+          fn = s[st:en]
+          fn = one(fn, '\tstruct tipc_group *grp = tsk->group;\n', '', 'anycast cached group')
+          fn = one(fn,
+                   '\tdomain = addr_domain(net, dest->scope);\n\texclude = tipc_group_exclude(grp);\n\n\twhile (++lookups < 4) {\n',
+                   '\tdomain = addr_domain(net, dest->scope);\n\n\twhile (++lookups < 4) {\n\t\texclude = tipc_group_exclude(tsk->group);\n\n',
+                   'anycast exclude reload')
+          fn = fn.replace('tipc_group_cong(grp, node, port, blks, &mbr)', 'tipc_group_cong(tsk->group, node, port, blks, &mbr)')
+          fn = one(fn,
+                   '\t\t\t\t\t!tipc_group_cong(grp, node, port,\n\t\t\t\t\t\t\t blks, &mbr));\n',
+                   '\t\t\t\t\ttsk->group &&\n\t\t\t\t\t!tipc_group_cong(tsk->group, node, port,\n\t\t\t\t\t\t\t blks, &mbr));\n',
+                   'anycast live group check')
+          s = s[:st] + fn + s[en:]
+
+          # 143ece + 3c6306: broadcast reloads both group and dests after wait.
+          st = s.index('static int tipc_send_group_bcast(')
+          en = s.index('\n}\n', st) + 3
+          fn = s[st:en]
+          fn = one(fn, '\tstruct tipc_group *grp = tsk->group;\n', '', 'broadcast cached group')
+          fn = one(fn, '\tstruct tipc_nlist *dsts = tipc_group_dests(grp);\n', '\tstruct tipc_nlist *dsts;\n', 'broadcast cached dests')
+          old = '\tif (!dsts->local && !dsts->remote)\n\t\treturn -EHOSTUNREACH;\n\n\t/* Block or return if any destination link or member is congested */\n\trc = tipc_wait_for_cond(sock, &timeout,\t!tsk->cong_link_cnt &&\n\t\t\t\t!tipc_group_bc_cong(grp, blks));\n\tif (unlikely(rc))\n\t\treturn rc;\n\n'
+          new = '\t/* Block or return if any destination link or member is congested */\n\trc = tipc_wait_for_cond(sock, &timeout,\n\t\t\t\t!tsk->cong_link_cnt && tsk->group &&\n\t\t\t\t!tipc_group_bc_cong(tsk->group, blks));\n\tif (unlikely(rc))\n\t\treturn rc;\n\n\tdsts = tipc_group_dests(tsk->group);\n\tif (!dsts->local && !dsts->remote)\n\t\treturn -EHOSTUNREACH;\n\n'
+          fn = one(fn, old, new, 'broadcast wait/destination reload')
+          fn = fn.replace('tipc_group_bc_snd_nxt(grp)', 'tipc_group_bc_snd_nxt(tsk->group)')
+          s = s[:st] + fn + s[en:]
+
+          # 60c253 + 1b22 semantics, minimally adapted: poll never dereferences group.
+          s = one(s, '\tstruct tipc_group *group;\n', '\tstruct tipc_group *group;\n\tbool group_is_open;\t/* poll-safe group write readiness */\n', 'socket group readiness')
+          s = one(s,
+                  '\ttsk->conn_timeout = CONN_TIMEOUT_DEFAULT;\n\tatomic_set(&tsk->dupl_rcvcnt, 0);\n',
+                  '\ttsk->conn_timeout = CONN_TIMEOUT_DEFAULT;\n\ttsk->group_is_open = true;\n\tatomic_set(&tsk->dupl_rcvcnt, 0);\n',
+                  'group readiness initial value')
+          st = s.index('static unsigned int tipc_poll(')
+          en = s.index('\n}\n', st) + 3
+          fn = s[st:en]
+          fn = one(fn, '\tstruct tipc_group *grp = tsk->group;\n', '', 'poll cached group')
+          fn = one(fn,
+                   '\tcase TIPC_OPEN:\n\t\tif (!grp || tipc_group_size(grp))\n\t\t\tif (!tsk->cong_link_cnt)\n\t\t\t\trevents |= POLLOUT;\n',
+                   '\tcase TIPC_OPEN:\n\t\tif (READ_ONCE(tsk->group_is_open) && !tsk->cong_link_cnt)\n\t\t\trevents |= POLLOUT;\n',
+                   'poll group readiness')
+          s = s[:st] + fn + s[en:]
+
+          s = one(s,
+                  'grp = tipc_group_create(net, tsk->portid, mreq);',
+                  'grp = tipc_group_create(net, tsk->portid, mreq,\n\t\t\t\t&tsk->group_is_open);',
+                  'group create call')
+          s = one(s,
+                  '\tif (rc) {\n\t\ttipc_group_delete(net, grp);\n\t\ttsk->group = NULL;\n\t}\n',
+                  '\tif (rc) {\n\t\ttipc_group_delete(net, grp);\n\t\ttsk->group = NULL;\n\t\tWRITE_ONCE(tsk->group_is_open, true);\n\t}\n',
+                  'failed join readiness restore')
+          s = one(s,
+                  '\ttipc_group_delete(net, grp);\n\ttsk->group = NULL;\n\ttipc_sk_withdraw(tsk, scope, &seq);\n',
+                  '\ttipc_group_delete(net, grp);\n\ttsk->group = NULL;\n\tWRITE_ONCE(tsk->group_is_open, true);\n\ttipc_sk_withdraw(tsk, scope, &seq);\n',
+                  'leave readiness restore')
+
+          h = one(h,
+                  'struct tipc_group *tipc_group_create(struct net *net, u32 portid,\n\t\t\t\t     struct tipc_group_req *mreq);',
+                  'struct tipc_group *tipc_group_create(struct net *net, u32 portid,\n\t\t\t\t     struct tipc_group_req *mreq,\n\t\t\t\t     bool *group_is_open);',
+                  'group create declaration')
+
+          g = one(g, '\tu16 bc_ackers;\n', '\tu16 bc_ackers;\n\tbool *open;\t\t/* readiness lives in struct tipc_sock */\n', 'group readiness pointer')
+          g = one(g,
+                  'struct tipc_group *tipc_group_create(struct net *net, u32 portid,\n\t\t\t\t     struct tipc_group_req *mreq)',
+                  'struct tipc_group *tipc_group_create(struct net *net, u32 portid,\n\t\t\t\t     struct tipc_group_req *mreq,\n\t\t\t\t     bool *group_is_open)',
+                  'group create definition')
+          g = one(g,
+                  '\tgrp->events = mreq->flags & TIPC_GROUP_MEMBER_EVTS;\n',
+                  '\tgrp->events = mreq->flags & TIPC_GROUP_MEMBER_EVTS;\n\tgrp->open = group_is_open;\n',
+                  'group readiness pointer assignment')
+
+          pat = re.compile(r'(\tif \(tipc_topsrv_kern_subscr\([^\n]*\)\)\n)(\t\treturn grp;)')
+          m = pat.search(g)
+          if not m:
+              raise SystemExit('group create subscription success block not found')
+          g = g[:m.start()] + m.group(1) + '\t\tWRITE_ONCE(*grp->open, false);\n' + m.group(2) + g[m.end():]
+
+          st = g.index('static struct tipc_member *tipc_group_create_member')
+          en = g.index('\n}\n\nvoid tipc_group_add_member', st) + 3
+          cm = g[st:en]
+          cm = one(cm, '\tgrp->member_cnt++;\n', '\tgrp->member_cnt++;\n\tWRITE_ONCE(*grp->open, true);\n', 'member readiness open')
+          g = g[:st] + cm + g[en:]
+
+          st = g.index('static void tipc_group_delete_member')
+          en = g.index('\n}\n', st) + 3
+          dm = g[st:en]
+          dm = one(dm, '\tgrp->member_cnt--;\n', '\tgrp->member_cnt--;\n\tif (!grp->member_cnt)\n\t\tWRITE_ONCE(*grp->open, false);\n', 'member readiness close')
+          g = g[:st] + dm + g[en:]
+
+          st = g.index('void tipc_group_delete(struct net *net, struct tipc_group *grp)')
+          brace = g.index('{\n', st) + 2
+          g = g[:brace] + '\tWRITE_ONCE(*grp->open, false);\n' + g[brace:]
+
+          sp.write_text(s)
+          gp.write_text(g)
+          hp.write_text(h)
+          vp.write_text(v)
+          PY
+
+          git diff --check
+          if grep -RInE '^(<<<<<<<|=======|>>>>>>>)' net/tipc include/uapi/linux/tipc.h; then
+            echo "::error::Conflict marker found"
+            exit 1
+          fi
+          git add net/tipc/socket.c net/tipc/group.c net/tipc/group.h net/tipc/server.c
+          git commit -m "tipc: harden communication groups lifetime and state
+
+          Backport the confirmed pre-refactor group correctness fixes and
+          manually adapt later lifetime fixes without importing the Jan-2018
+          group refactor. Preserve Sweet's skb_queue_empty_lockless() poll path."
+
+      - name: Static verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="${{ steps.guard.outputs.base }}"
+          git diff --check "$BASE..HEAD"
+          grep -q 'skb_queue_empty_lockless' net/tipc/socket.c
+          grep -q 'READ_ONCE(tsk->group_is_open)' net/tipc/socket.c
+          grep -q 'if (IS_ERR(con))' net/tipc/server.c
+          grep -q '\*(u64 \*)&sub.usr_handle = (u64)port;' net/tipc/server.c
+          grep -q '__skb_queue_purge(&m->deferredq);' net/tipc/group.c
+          grep -q 'return -EEXIST;' net/tipc/group.c
+          grep -q 'ret = tipc_group_add_to_tree(grp, m);' net/tipc/group.c
+          grep -q 'less_eq(acked, m->bc_acked)' net/tipc/group.c
+          ! grep -q 'grp->bc_ackers = grp->member_cnt;' net/tipc/group.c
+          python3 - <<'PY'
+          from pathlib import Path
+          s = Path('net/tipc/socket.c').read_text()
+          def block(name):
+              st = s.index(name)
+              en = s.index('\n}\n', st)
+              return s[st:en]
+          poll = block('static unsigned int tipc_poll(')
+          assert 'struct tipc_group *grp = tsk->group;' not in poll
+          assert 'tipc_group_size(grp)' not in poll
+          assert 'READ_ONCE(tsk->group_is_open)' in poll
+          assert 'skb_queue_empty_lockless' in poll
+          uni = block('static int tipc_send_group_unicast(')
+          anyc = block('static int tipc_send_group_anycast(')
+          bc = block('static int tipc_send_group_bcast(')
+          for name, fn in [('unicast', uni), ('anycast', anyc), ('broadcast', bc)]:
+              assert 'struct tipc_group *grp = tsk->group;' not in fn, name
+              assert 'tsk->group &&' in fn, name
+          assert 'exclude = tipc_group_exclude(tsk->group);' in anyc
+          assert bc.index('dsts = tipc_group_dests(tsk->group);') > bc.index('tipc_wait_for_cond')
+          print('TIPC static lifetime assertions: PASS')
+          PY
+
+      - name: Verify remote refs unchanged and push TIPC_GROUPS only
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="${{ steps.guard.outputs.base }}"
+          STABLE="${{ steps.guard.outputs.stable }}"
+          git fetch --no-tags origin stable "$TARGET_BRANCH"
+          REMOTE_TIPC="$(git rev-parse refs/remotes/origin/$TARGET_BRANCH)"
+          REMOTE_STABLE="$(git rev-parse refs/remotes/origin/stable)"
+          [[ "$REMOTE_TIPC" == "$BASE" ]] || {
+            echo "::error::TIPC_GROUPS changed during run; refusing non-atomic push"
+            exit 1
+          }
+          [[ "$REMOTE_STABLE" == "$STABLE" ]] || {
+            echo "::error::stable changed during run; refusing push"
+            exit 1
+          }
+          git push origin "HEAD:refs/heads/$TARGET_BRANCH"
+          echo "PUSHED_HEAD=$(git rev-parse HEAD)"
+          echo "STABLE_UNCHANGED=$REMOTE_STABLE"
