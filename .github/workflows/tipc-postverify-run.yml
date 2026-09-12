@@ -1,0 +1,50 @@
+name: TIPC postverify exact correction
+
+on:
+  push:
+    branches:
+      - TIPC_GROUPS
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout TIPC_GROUPS shallow
+        uses: actions/checkout@v4
+        with:
+          ref: TIPC_GROUPS
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Apply exact correction, verify, and push guarded
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="$(git rev-parse HEAD)"
+          REMOTE_TIPC="$(git ls-remote origin refs/heads/TIPC_GROUPS | awk '{print $1}')"
+          STABLE="$(git ls-remote origin refs/heads/stable | awk '{print $1}')"
+          test "$BASE" = "$REMOTE_TIPC"
+
+          python3 .github/scripts/tipc_postverify_fix.py
+          git diff --check
+
+          grep -Fq 'if (tipc_topsrv_kern_subscr(net, portid, type, 0, ~0, &grp->subid)) {' net/tipc/group.c
+          grep -Fq 'skb_queue_empty_lockless' net/tipc/socket.c
+          grep -Fq 'READ_ONCE(tsk->group_is_open)' net/tipc/socket.c
+          grep -Fq 'less_eq(acked, m->bc_acked)' net/tipc/group.c
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add net/tipc/group.c
+          git commit -m "tipc: fix group create success control flow"
+
+          REMOTE_TIPC_NOW="$(git ls-remote origin refs/heads/TIPC_GROUPS | awk '{print $1}')"
+          REMOTE_STABLE_NOW="$(git ls-remote origin refs/heads/stable | awk '{print $1}')"
+          test "$REMOTE_TIPC_NOW" = "$BASE"
+          test "$REMOTE_STABLE_NOW" = "$STABLE"
+          git push origin HEAD:refs/heads/TIPC_GROUPS
