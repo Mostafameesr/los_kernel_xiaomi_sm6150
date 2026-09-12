@@ -1,18 +1,14 @@
-name: TIPC Groups hardening (TIPC_GROUPS)
+name: TIPC Groups hardening AUTO (TIPC_GROUPS)
 
+# AUTO-RUN: adding/updating this file on TIPC_GROUPS starts the workflow.
+# The workflow later pushes only kernel source changes, so the paths filter
+# prevents a self-trigger loop.
 on:
   push:
     branches:
       - TIPC_GROUPS
     paths:
       - ".github/workflows/tipc-groups-hardening.yml"
-  workflow_dispatch:
-    inputs:
-      push_changes:
-        description: "Push verified commits back to TIPC_GROUPS"
-        required: false
-        default: true
-        type: boolean
 
 permissions:
   contents: write
@@ -621,7 +617,6 @@ jobs:
             tipc-hardening-report.txt
 
       - name: Push verified commits to TIPC_GROUPS only
-        if: ${{ github.event_name == 'push' || inputs.push_changes }}
         shell: bash
         run: |
           set -euo pipefail
