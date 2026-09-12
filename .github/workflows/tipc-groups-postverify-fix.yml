@@ -1,0 +1,124 @@
+name: TIPC Groups post-verify correction
+
+on:
+  push:
+    branches:
+      - TIPC_GROUPS
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tipc-groups-postverify-${{ github.repository }}
+  cancel-in-progress: true
+
+jobs:
+  fix:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Shallow checkout
+        uses: actions/checkout@v4
+        with:
+          ref: TIPC_GROUPS
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Record immutable guards
+        id: guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="$(git rev-parse HEAD)"
+          REMOTE_TIPC="$(git ls-remote origin refs/heads/TIPC_GROUPS | awk '{print $1}')"
+          STABLE="$(git ls-remote origin refs/heads/stable | awk '{print $1}')"
+          [[ "$BASE" == "$REMOTE_TIPC" ]]
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
+          echo "stable=$STABLE" >> "$GITHUB_OUTPUT"
+
+      - name: Correct group create control flow and declaration order
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('net/tipc/group.c')
+          s = p.read_text()
+
+          old = '''\tif (tipc_topsrv_kern_subscr(net, portid, type, 0, ~0, &grp->subid))
+\t\tWRITE_ONCE(*grp->open, false);
+\t\treturn grp;
+\tkfree(grp);
+'''
+          new = '''\tif (tipc_topsrv_kern_subscr(net, portid, type, 0, ~0, &grp->subid)) {
+\t\tWRITE_ONCE(*grp->open, false);
+\t\treturn grp;
+\t}
+\tkfree(grp);
+'''
+          if s.count(old) != 1:
+              raise SystemExit(f'group_create control-flow pattern count={s.count(old)}')
+          s = s.replace(old, new, 1)
+
+          old = '''void tipc_group_delete(struct net *net, struct tipc_group *grp)
+{
+\tWRITE_ONCE(*grp->open, false);
+\tstruct rb_root *tree = &grp->members;
+\tstruct tipc_member *m, *tmp;
+\tstruct sk_buff_head xmitq;
+
+\t__skb_queue_head_init(&xmitq);
+'''
+          new = '''void tipc_group_delete(struct net *net, struct tipc_group *grp)
+{
+\tstruct rb_root *tree = &grp->members;
+\tstruct tipc_member *m, *tmp;
+\tstruct sk_buff_head xmitq;
+
+\tWRITE_ONCE(*grp->open, false);
+\t__skb_queue_head_init(&xmitq);
+'''
+          if s.count(old) != 1:
+              raise SystemExit(f'group_delete declaration pattern count={s.count(old)}')
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+          PY
+
+          git diff --check
+          python3 - <<'PY'
+          from pathlib import Path
+          s = Path('net/tipc/group.c').read_text()
+          good = '''if (tipc_topsrv_kern_subscr(net, portid, type, 0, ~0, &grp->subid)) {
+\t\tWRITE_ONCE(*grp->open, false);
+\t\treturn grp;
+\t}'''
+          assert good in s
+          bad = '''if (tipc_topsrv_kern_subscr(net, portid, type, 0, ~0, &grp->subid))
+\t\tWRITE_ONCE(*grp->open, false);
+\t\treturn grp;'''
+          assert bad not in s
+          assert 'skb_queue_empty_lockless' in Path('net/tipc/socket.c').read_text()
+          print('post-verify correction assertions: PASS')
+          PY
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add net/tipc/group.c
+          git commit -m "tipc: fix group create success control flow
+
+          Keep the readiness update and return inside the topology subscription
+          success branch, and retain declaration-before-statement ordering in
+          tipc_group_delete()."
+
+      - name: Verify refs and push TIPC_GROUPS only
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="${{ steps.guard.outputs.base }}"
+          STABLE="${{ steps.guard.outputs.stable }}"
+          REMOTE_TIPC="$(git ls-remote origin refs/heads/TIPC_GROUPS | awk '{print $1}')"
+          REMOTE_STABLE="$(git ls-remote origin refs/heads/stable | awk '{print $1}')"
+          [[ "$REMOTE_TIPC" == "$BASE" ]] || { echo '::error::TIPC_GROUPS moved; refusing push'; exit 1; }
+          [[ "$REMOTE_STABLE" == "$STABLE" ]] || { echo '::error::stable moved; refusing push'; exit 1; }
+          git push origin HEAD:refs/heads/TIPC_GROUPS
