@@ -31,6 +31,31 @@
 	qcom,board-id = <0 0>;
 };
 
+/*
+ * Keep exactly one ramoops backend on Xiaomi SDMMAGPIE devices.
+ * The generic 0xb0000000 node duplicates the original Xiaomi pstore
+ * reservation at 0x9d800000 and ramoops supports only one active area.
+ */
+&reserved_memory {
+	/delete-node/ ramoops@b0000000;
+};
+
+/*
+ * 4 MiB persistent RAM layout:
+ *   1536 KiB dmesg (3 x 512 KiB records)
+ *   2048 KiB console (continuously written; survives hard resets when RAM does)
+ *    512 KiB pmsg
+ * max-reason 4 records panic, oops, emergency restart and restart, while
+ * avoiding normal halt/poweroff dumps.
+ */
+&ramoops_mem {
+	record-size = <0x00080000>;
+	console-size = <0x00200000>;
+	pmsg-size = <0x00080000>;
+	ecc-size = <16>;
+	max-reason = <4>;
+};
+
 &pm6150l_lcdb {
 	/delete-property/ qcom,voltage-step-ramp;
 };
