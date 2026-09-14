@@ -4,8 +4,8 @@
  * it under the terms of the GNU General Public License version 2 and
  * only version 2 as published by the Free Software Foundation.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  */
@@ -33,22 +33,23 @@
 
 /*
  * Keep exactly one ramoops backend on Xiaomi SDMMAGPIE devices.
- * The generic 0xb0000000 node duplicates the original Xiaomi pstore
- * reservation at 0x9d800000 and ramoops supports only one active area.
+ * Sweet's Xiaomi kernel reserved 4 MiB at 0xb0000000 for persistent
+ * ramoops storage.  Use that established reservation through DT and
+ * remove the later duplicate 0x9d800000 backend.
  */
 &reserved_memory {
-	/delete-node/ ramoops@b0000000;
+	/delete-node/ ramoops@9d800000;
 };
 
 /*
  * 4 MiB persistent RAM layout:
  *   1536 KiB dmesg (3 x 512 KiB records)
- *   2048 KiB console (continuously written; survives hard resets when RAM does)
+ *   2048 KiB console (continuously written)
  *    512 KiB pmsg
- * max-reason 4 records panic, oops, emergency restart and restart, while
- * avoiding normal halt/poweroff dumps.
+ * max-reason 4 records panic, oops, emergency restart and restart.
+ * ECC is kept enabled for all persistent RAM zones.
  */
-&ramoops_mem {
+&ramoops {
 	record-size = <0x00080000>;
 	console-size = <0x00200000>;
 	pmsg-size = <0x00080000>;
