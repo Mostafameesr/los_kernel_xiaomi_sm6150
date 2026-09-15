@@ -42,8 +42,22 @@ jobs:
           git config remote.linux-upstream.partialclonefilter blob:none
           git config extensions.partialClone linux-upstream
 
+          # d12d2e12 predates the poll/setsockopt race fix already present in
+          # Sweet. Keep Sweet's bool *group_is_open ABI while taking the
+          # immediate-JOIN behavior and member instance propagation.
+          c=d12d2e12cec2d66eab6cd58f592dad9fd386b97d
+          git fetch --no-tags --depth=2 --filter=blob:none linux-upstream "$c"
+          if ! git cherry-pick FETCH_HEAD; then
+            conflicts="$(git diff --name-only --diff-filter=U)"
+            test "$conflicts" = "net/tipc/group.h"
+            git checkout --ours net/tipc/group.h
+            perl -0pi -e 's/(bool \*group_is_open\);\n)/$1void tipc_group_join(struct net *net, struct tipc_group *grp, int *sk_rcv_buf);\n/' net/tipc/group.h
+            perl -0pi -e 's/void tipc_group_add_member\(struct tipc_group \*grp, u32 node, u32 port\);/void tipc_group_add_member(struct tipc_group *grp, u32 node,\n\t\t\t   u32 port, u32 instance);/' net/tipc/group.h
+            git add net/tipc/group.h
+            git cherry-pick --continue
+          fi
+
           commits=(
-            d12d2e12cec2d66eab6cd58f592dad9fd386b97d
             8348500f80d5660af29c475e1f15d412d83564c9
             232d07b74a33b9f5d48516dc1d8ce41723ada593
             febafc8455fdbb0ba53d596075068a683b75f355
@@ -66,6 +80,7 @@ jobs:
           grep -q "tipc_group_join(net, grp" net/tipc/socket.c
           grep -q "TIPC_SUB_NO_STATUS" net/tipc/server.h
           grep -q "TIPC_SUB_NO_STATUS" net/tipc/group.c
+          grep -q "bool \*group_is_open" net/tipc/group.h
 
           git config --unset extensions.partialClone || true
           git push origin HEAD:TIPC_GROUPS_SPRING_FSM_20260915
