@@ -335,15 +335,22 @@ void tipc_group_add_member(struct tipc_group *grp, u32 node,
 	tipc_group_create_member(grp, node, port, instance, MBR_PUBLISHED);
 }
 
-static void tipc_group_delete_member(struct tipc_group *grp,
+static bool tipc_group_delete_member(struct tipc_group *grp,
 				     struct tipc_member *m)
 {
+	bool wakeup = false;
+
 	rb_erase(&m->tree_node, &grp->members);
 	grp->member_cnt--;
 
-	/* Check if we were waiting for replicast ack from this member */
-	if (grp->bc_ackers && less(m->bc_acked, grp->bc_snd_nxt - 1))
-		grp->bc_ackers--;
+	/* If the departing member owed the last replicast ACK, clear the
+	 * broadcast congestion state and wake a blocked sender.
+	 */
+	if (grp->bc_ackers && less(m->bc_acked, grp->bc_snd_nxt - 1) &&
+	    !--grp->bc_ackers) {
+		wakeup = !READ_ONCE(*grp->open);
+		WRITE_ONCE(*grp->open, true);
+	}
 
 	list_del_init(&m->list);
 	list_del_init(&m->small_win);
@@ -354,6 +361,7 @@ static void tipc_group_delete_member(struct tipc_group *grp,
 		tipc_nlist_del(&grp->dests, m->node);
 
 	kfree(m);
+	return wakeup;
 }
 
 struct tipc_nlist *tipc_group_dests(struct tipc_group *grp)
@@ -494,10 +502,11 @@ static void tipc_group_sort_msg(struct sk_buff *skb, struct sk_buff_head *defq)
 
 /* tipc_group_filter_msg() - determine if we should accept arriving message
  */
-void tipc_group_filter_msg(struct tipc_group *grp, struct sk_buff_head *inputq,
+bool tipc_group_filter_msg(struct tipc_group *grp, struct sk_buff_head *inputq,
 			   struct sk_buff_head *xmitq)
 {
 	struct sk_buff *skb = __skb_dequeue(inputq);
+	bool wakeup = false;
 	bool ack, deliver, update, leave = false;
 	struct sk_buff_head *defq;
 	struct tipc_member *m;
@@ -506,7 +515,7 @@ void tipc_group_filter_msg(struct tipc_group *grp, struct sk_buff_head *inputq,
 	int mtyp, blks;
 
 	if (!skb)
-		return;
+		return false;
 
 	hdr = buf_msg(skb);
 	node =  msg_orignode(hdr);
@@ -573,7 +582,7 @@ void tipc_group_filter_msg(struct tipc_group *grp, struct sk_buff_head *inputq,
 
 		if (leave) {
 			__skb_queue_purge(defq);
-			tipc_group_delete_member(grp, m);
+			wakeup = tipc_group_delete_member(grp, m);
 			break;
 		}
 		if (!update)
@@ -581,9 +590,10 @@ void tipc_group_filter_msg(struct tipc_group *grp, struct sk_buff_head *inputq,
 
 		tipc_group_update_rcv_win(grp, blks, node, port, xmitq);
 	}
-	return;
+	return wakeup;
 drop:
 	kfree_skb(skb);
+	return false;
 }
 
 void tipc_group_update_rcv_win(struct tipc_group *grp, int blks, u32 node,
