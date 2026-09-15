@@ -6,8 +6,8 @@
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
  */
 
 /dts-v1/;
@@ -29,16 +29,6 @@
 	compatible = "qcom,sdmmagpie";
 	qcom,pmic-name = "PM6150";
 	qcom,board-id = <0 0>;
-};
-
-/*
- * Qualcomm downstream SM6150 reserves ramoops early from
- * ramoops_memreserve=4M at 0xb0000000.  Remove both historical DT ramoops
- * nodes so only that single early-reserved backend can be instantiated.
- */
-&reserved_memory {
-	/delete-node/ ramoops@9d800000;
-	/delete-node/ ramoops@b0000000;
 };
 
 &pm6150l_lcdb {
