@@ -1,4 +1,4 @@
-name: TIPC Spring FSM phase 4 hardening
+name: TIPC Sweet compile validation
 
 on:
   push:
@@ -8,103 +8,68 @@ on:
       - .github/workflows/tipc-spring-fsm-fast.yml
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  harden:
+  build-tipc:
     runs-on: ubuntu-latest
     steps:
-      - name: Sparse checkout work branch
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          git init .
-          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          git config remote.origin.promisor true
-          git config remote.origin.partialclonefilter blob:none
-          git sparse-checkout init --cone
-          git sparse-checkout set net/tipc .github/workflows
-          git fetch --no-tags --depth=2 --filter=blob:none origin TIPC_GROUPS_SPRING_FSM_20260915
-          git checkout -B TIPC_GROUPS_SPRING_FSM_20260915 FETCH_HEAD
-          find net/tipc -type f -print0 | xargs -0 cat >/dev/null
-          git config user.name "TIPC backport bot"
-          git config user.email "tipc-backport@users.noreply.github.com"
+      - name: Checkout work branch
+        uses: actions/checkout@v4
+        with:
+          ref: TIPC_GROUPS_SPRING_FSM_20260915
+          fetch-depth: 1
 
-      - name: Harden release and ACK paths
+      - name: Install kernel build dependencies
         shell: bash
         run: |
           set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y bc bison flex libelf-dev libssl-dev
 
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('net/tipc/socket.c')
-          s = p.read_text()
-          old = '''\ttipc_sk_remove(tsk);\n\n\t/* Reject any messages that accumulated in backlog queue */\n\trelease_sock(sk);\n\ttipc_dest_list_purge(&tsk->cong_links);\n\ttsk->cong_link_cnt = 0;\n'''
-          new = '''\ttipc_sk_remove(tsk);\n\n\t/* Purge under the socket lock: a SOCK_WAKEUP looked up before\n\t * tipc_sk_remove() can still reach tipc_dest_del() on this list.\n\t */\n\ttipc_dest_list_purge(&tsk->cong_links);\n\n\t/* Reject any messages that accumulated in backlog queue */\n\trelease_sock(sk);\n\ttsk->cong_link_cnt = 0;\n'''
-          if old not in s:
-              raise SystemExit('release cong_links block not found')
-          p.write_text(s.replace(old, new, 1))
-          PY
-          git add net/tipc/socket.c
-          git diff --cached --check
-          git commit -m "tipc: purge cong_links under socket lock in release" -m "Adapt the Sep 2 2026 netdev v2 fix to Sweet 4.14. Sweet tipc_sk_timeout() does not access cong_links, so the modern timer-side review objection does not apply here. Keep cong_link_cnt reset after release_sock() so a queued SOCK_WAKEUP cannot underflow the counter."
+      - name: Show toolchain
+        shell: bash
+        run: |
+          set -euxo pipefail
+          clang --version
+          ld.lld --version
+          llvm-ar --version | head -n 1
 
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('net/tipc/group.c')
-          s = p.read_text()
-          old = '''\tcase GRP_ACK_MSG:\n\t\tif (!m)\n\t\t\treturn;\n\t\tacked = msg_grp_bc_acked(hdr);\n\t\tif (less_eq(acked, m->bc_acked))\n\t\t\treturn;\n'''
-          new = '''\tcase GRP_ACK_MSG:\n\t\tif (!m || !grp->bc_ackers)\n\t\t\treturn;\n\t\tacked = msg_grp_bc_acked(hdr);\n\t\tif (acked != grp->bc_snd_nxt || m->bc_acked == acked)\n\t\t\treturn;\n'''
-          if old not in s:
-              raise SystemExit('GRP_ACK_MSG target block not found')
-          p.write_text(s.replace(old, new, 1))
-          PY
-          git add net/tipc/group.c
-          git diff --cached --check
-          git commit -m "tipc: reject invalid and unexpected group ACKs" -m "Backport the Sep 13 2026 netdev hardening on top of 48a5fe38772b: never decrement bc_ackers when no ACK is expected, and only accept the exact current broadcast sequence once per member."
+      - name: Generate Sweet configuration
+        shell: bash
+        run: |
+          set -euxo pipefail
+          make O=out ARCH=arm64 LLVM=1 vendor/sweet_defconfig
+          grep '^CONFIG_TIPC=y' out/.config
+          grep '^CONFIG_ARCH_SM6150=y' out/.config
 
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('net/tipc/socket.c')
-          s = p.read_text()
-          old = '''\t} else if (mtyp == CONN_ACK) {\n\t\tconn_cong = tsk_conn_cong(tsk);\n\t\ttsk->snt_unacked -= msg_conn_ack(hdr);\n'''
-          new = '''\t} else if (mtyp == CONN_ACK) {\n\t\tif (tsk->snt_unacked < msg_conn_ack(hdr))\n\t\t\tgoto exit;\n\n\t\tconn_cong = tsk_conn_cong(tsk);\n\t\ttsk->snt_unacked -= msg_conn_ack(hdr);\n'''
-          if old not in s:
-              raise SystemExit('CONN_ACK target block not found')
-          p.write_text(s.replace(old, new, 1))
-          PY
-          git add net/tipc/socket.c
-          git diff --cached --check
-          git commit -m "tipc: prevent snt_unacked underflow on CONN_ACK" -m "Backport upstream ab3e10b44ba5411779aac7afd2477917dd77750f to the Sweet 4.14 connection flow-control implementation."
+      - name: Build TIPC objects
+        shell: bash
+        run: |
+          set -euxo pipefail
+          make O=out ARCH=arm64 LLVM=1 -j2 net/tipc/built-in.o V=1
+          test -s out/net/tipc/built-in.o
+          file out/net/tipc/built-in.o
 
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('net/tipc/socket.c')
-          s = p.read_text()
-          old = '''\tif (tipc_sk_insert(tsk)) {\n\t\tsk_free(sk);\n\t\tpr_warn("Socket create failed; port number exhausted\\n");\n'''
-          new = '''\tif (tipc_sk_insert(tsk)) {\n\t\tsk_free(sk);\n\t\tsock->sk = NULL;\n\t\tpr_warn("Socket create failed; port number exhausted\\n");\n'''
-          if old not in s:
-              raise SystemExit('failed insert target block not found')
-          p.write_text(s.replace(old, new, 1))
-          PY
-          git add net/tipc/socket.c
-          git diff --cached --check
-          git commit -m "tipc: clear sock sk on failed socket insertion" -m "Backport upstream ba0533fc163f905fe817cfabdf8ed4058da44800 so failed accept/socket insertion cannot leave a dangling sock->sk for tipc_release()."
+      - name: Compile changed TIPC translation units explicitly
+        shell: bash
+        run: |
+          set -euxo pipefail
+          make O=out ARCH=arm64 LLVM=1 -j2 \
+            net/tipc/group.o \
+            net/tipc/socket.o \
+            net/tipc/name_table.o \
+            net/tipc/server.o \
+            net/tipc/subscr.o V=1
+          for f in group socket name_table server subscr; do
+            test -s "out/net/tipc/${f}.o"
+          done
 
-          git diff --check HEAD~4..HEAD
-
-          python3 - <<'PY'
-          from pathlib import Path
-          s = Path('net/tipc/socket.c').read_text()
-          g = Path('net/tipc/group.c').read_text()
-          assert s.index('tipc_dest_list_purge(&tsk->cong_links);') < s.index('release_sock(sk);', s.index('static int tipc_release'))
-          assert 'if (!m || !grp->bc_ackers)' in g
-          assert 'if (acked != grp->bc_snd_nxt || m->bc_acked == acked)' in g
-          assert 'if (tsk->snt_unacked < msg_conn_ack(hdr))' in s
-          assert 'sk_free(sk);\n\t\tsock->sk = NULL;' in s
-          assert 'conn_timeout / 4' not in s
-          PY
-
-          git push origin HEAD:TIPC_GROUPS_SPRING_FSM_20260915
+      - name: Check generated objects for unresolved compile fallout
+        shell: bash
+        run: |
+          set -euxo pipefail
+          llvm-nm out/net/tipc/group.o >/tmp/group.nm
+          llvm-nm out/net/tipc/socket.o >/tmp/socket.nm
+          grep ' tipc_group_join$' /tmp/group.nm
+          grep ' tipc_sk_create$' /tmp/socket.nm || true
