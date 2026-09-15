@@ -1,4 +1,4 @@
-name: TIPC Spring FSM fast backport
+name: TIPC Spring FSM phase 2
 
 on:
   push:
@@ -29,17 +29,13 @@ jobs:
           git fetch --no-tags --depth=1 --filter=blob:none origin TIPC_GROUPS_SPRING_FSM_20260915
           git checkout -B TIPC_GROUPS_SPRING_FSM_20260915 FETCH_HEAD
 
-      - name: Apply upstream TIPC group FSM prerequisites
+      - name: Apply Spring group join and topology semantics
         shell: bash
         run: |
           set -euxo pipefail
           git config user.name "TIPC backport bot"
           git config user.email "tipc-backport@users.noreply.github.com"
           git remote add linux-upstream https://github.com/torvalds/linux.git || true
-
-          # The Sweet remote is used only to obtain the sparse worktree.
-          # During cherry-pick, any lazily requested objects must come from
-          # the upstream commit's repository, not from Sweet.
           git config --unset remote.origin.promisor || true
           git config --unset remote.origin.partialclonefilter || true
           git config remote.linux-upstream.promisor true
@@ -47,28 +43,29 @@ jobs:
           git config extensions.partialClone linux-upstream
 
           commits=(
-            38266ca17c5f142a25d4563335e143cbd62e65a7
-            d84d1b3b6b8c296de8d394002bc3a0ca910d7460
-            8d5dee21f6f01f4632c10b750709a1383eefc7aa
-            4ea5dab541717fc55cad609360b100857af770b0
-            0233493a5fad227645f7f02539cb42db72e76030
-            7ad32bcb7855ae8a60a8cf98e1b9da77cfdba4d0
-            c2b22bcf2e18a279afd80a8c57e936014acf3348
+            d12d2e12cec2d66eab6cd58f592dad9fd386b97d
+            8348500f80d5660af29c475e1f15d412d83564c9
+            232d07b74a33b9f5d48516dc1d8ce41723ada593
+            febafc8455fdbb0ba53d596075068a683b75f355
+            e9a034456a8cd766795610aa5065263147e35228
           )
 
           for c in "${commits[@]}"; do
             git fetch --no-tags --depth=2 --filter=blob:none linux-upstream "$c"
-            git cherry-pick FETCH_HEAD
+            if ! git cherry-pick FETCH_HEAD; then
+              echo "CHERRY_PICK_FAILED=$c"
+              git status --short
+              git diff -- net/tipc
+              exit 1
+            fi
           done
 
-          git diff --check HEAD~7..HEAD
-          ! grep -q "MBR_QUARANTINED" net/tipc/group.c
-          ! grep -q "event_msg" net/tipc/group.c
-          ! grep -q "struct list_head reclaiming" net/tipc/group.c
-          ! grep -q "struct list_head congested" net/tipc/group.c
-          grep -q "MBR_DISCOVERED" net/tipc/group.c
-          grep -q "small_win" net/tipc/group.c
+          git diff --check HEAD~5..HEAD
+          ! grep -q "MBR_DISCOVERED" net/tipc/group.c
+          grep -q "void tipc_group_join" net/tipc/group.c
+          grep -q "tipc_group_join(net, grp" net/tipc/socket.c
+          grep -q "TIPC_SUB_NO_STATUS" net/tipc/server.h
+          grep -q "TIPC_SUB_NO_STATUS" net/tipc/group.c
 
-          # Restore normal origin semantics for the write-back.
           git config --unset extensions.partialClone || true
           git push origin HEAD:TIPC_GROUPS_SPRING_FSM_20260915
