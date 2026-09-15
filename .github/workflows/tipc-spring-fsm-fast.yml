@@ -1,4 +1,4 @@
-name: TIPC Spring FSM phase 2 final runner
+name: TIPC Spring FSM phase 3 readiness
 
 on:
   push:
@@ -30,34 +30,169 @@ jobs:
           git checkout -B TIPC_GROUPS_SPRING_FSM_20260915 FETCH_HEAD
           find net/tipc include/uapi/linux -type f -print0 | xargs -0 cat >/dev/null
 
-      - name: Execute reviewed phase2 backport script
+      - name: Port Spring readiness and fix scope join
         shell: bash
         run: |
-          set -euo pipefail
+          set -euxo pipefail
+          git config user.name "TIPC backport bot"
+          git config user.email "tipc-backport@users.noreply.github.com"
+
           python3 - <<'PY'
-          import subprocess
           from pathlib import Path
 
-          text = subprocess.check_output(
-              ['git', 'show', 'HEAD^:.github/workflows/tipc-spring-fsm-fast.yml'],
-              text=True,
-          )
-          marker = '      - name: Apply Spring group join and topology semantics\n'
-          pos = text.index(marker)
-          pos = text.index('        run: |\n', pos) + len('        run: |\n')
-          body = []
-          for line in text[pos:].splitlines(True):
-              if line.strip() and not line.startswith('          '):
-                  break
-              if line.startswith('          '):
-                  body.append(line[10:])
-              else:
-                  body.append(line)
-          script = ''.join(body)
-          if 'git diff --check HEAD~7..HEAD' not in script:
-              raise SystemExit('expected reviewed phase2 verification line not found')
-          script = script.replace('git diff --check HEAD~7..HEAD',
-                                  'git diff --check HEAD~6..HEAD', 1)
-          Path('/tmp/tipc-phase2.sh').write_text(script)
+          p = Path('net/tipc/socket.c')
+          s = p.read_text()
+          old = '''static int tipc_sk_join(struct tipc_sock *tsk, struct tipc_group_req *mreq)\n{\n\tstruct net *net = sock_net(&tsk->sk);\n\tu32 domain = addr_domain(net, mreq->scope);\n\tstruct tipc_group *grp = tsk->group;\n'''
+          new = '''static int tipc_sk_join(struct tipc_sock *tsk, struct tipc_group_req *mreq)\n{\n\tstruct net *net = sock_net(&tsk->sk);\n\tstruct tipc_group *grp = tsk->group;\n'''
+          if old not in s:
+              raise SystemExit('join declaration block not found')
+          s = s.replace(old, new, 1)
+
+          old = '''\tif (mreq->type < TIPC_RESERVED_TYPES)\n\t\treturn -EACCES;\n\tif (grp)\n\t\treturn -EACCES;\n'''
+          new = '''\tif (mreq->type < TIPC_RESERVED_TYPES)\n\t\treturn -EACCES;\n\tif (mreq->scope > TIPC_NODE_SCOPE)\n\t\treturn -EINVAL;\n\tif (mreq->scope != TIPC_NODE_SCOPE)\n\t\tmreq->scope = TIPC_CLUSTER_SCOPE;\n\tif (grp)\n\t\treturn -EACCES;\n'''
+          if old not in s:
+              raise SystemExit('join validation block not found')
+          s = s.replace(old, new, 1)
+
+          old = '\ttipc_nametbl_build_group(net, grp, mreq->type, domain);\n'
+          new = '\ttipc_nametbl_build_group(net, grp, mreq->type, mreq->scope);\n'
+          if old not in s:
+              raise SystemExit('join build_group domain call not found')
+          s = s.replace(old, new, 1)
+          p.write_text(s)
           PY
-          bash -euxo pipefail /tmp/tipc-phase2.sh
+
+          git add net/tipc/socket.c
+          git diff --cached --check
+          git commit -m "tipc: pass group scope instead of address domain at join" -m "Align tipc_sk_join() with Spring semantics: validate/normalize scope and pass the publication scope to tipc_nametbl_build_group(). This fixes the exact-scope lookup introduced by the groupcast scope backport."
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('net/tipc/group.c')
+          s = p.read_text()
+
+          # eb929a91 + later 60c253 semantics: readiness lives in tipc_sock,
+          # and members wake writers only when they leave the small-window list.
+          old = '\tu16 bc_acked;\n\tbool usr_pending;\n};\n'
+          new = '\tu16 bc_acked;\n};\n'
+          if old not in s:
+              raise SystemExit('usr_pending member field not found')
+          s = s.replace(old, new, 1)
+
+          marker = '''static void tipc_group_proto_xmit(struct tipc_group *grp, struct tipc_member *m,\n\t\t\t\t  int mtyp, struct sk_buff_head *xmitq);\n\n'''
+          helper = '''static void tipc_group_proto_xmit(struct tipc_group *grp, struct tipc_member *m,\n\t\t\t\t  int mtyp, struct sk_buff_head *xmitq);\n\nstatic void tipc_group_open(struct tipc_member *m, bool *wakeup)\n{\n\t*wakeup = false;\n\tif (list_empty(&m->small_win))\n\t\treturn;\n\tlist_del_init(&m->small_win);\n\tWRITE_ONCE(*m->group->open, true);\n\t*wakeup = true;\n}\n\n'''
+          if marker not in s:
+              raise SystemExit('proto_xmit declaration marker not found')
+          s = s.replace(marker, helper, 1)
+
+          # Do not advertise writability merely because a publication/member
+          # object was discovered. The JOIN/ADV handshake opens it later.
+          old = '''\tgrp->member_cnt++;\n\tWRITE_ONCE(*grp->open, true);\n\ttipc_nlist_add(&grp->dests, m->node);\n'''
+          new = '''\tgrp->member_cnt++;\n\ttipc_nlist_add(&grp->dests, m->node);\n'''
+          if old not in s:
+              raise SystemExit('create_member early-open block not found')
+          s = s.replace(old, new, 1)
+
+          old = '''\tgrp->member_cnt--;\n\tif (!grp->member_cnt)\n\t\tWRITE_ONCE(*grp->open, false);\n\n\t/* Check if we were waiting for replicast ack from this member */\n'''
+          new = '''\tgrp->member_cnt--;\n\n\t/* Check if we were waiting for replicast ack from this member */\n'''
+          if old not in s:
+              raise SystemExit('delete_member direct-open block not found')
+          s = s.replace(old, new, 1)
+
+          # Replace group unicast congestion logic with Spring/eb929 behavior.
+          start = s.index('bool tipc_group_cong(')
+          end = s.index('\nbool tipc_group_bc_cong(', start)
+          fn = '''bool tipc_group_cong(struct tipc_group *grp, u32 dnode, u32 dport,\n\t\t     int len, struct tipc_member **mbr)\n{\n\tstruct sk_buff_head xmitq;\n\tstruct tipc_member *m;\n\tint adv, state;\n\n\tm = tipc_group_find_dest(grp, dnode, dport);\n\tif (!tipc_group_is_receiver(m)) {\n\t\t*mbr = NULL;\n\t\treturn false;\n\t}\n\t*mbr = m;\n\n\tif (m->window >= len)\n\t\treturn false;\n\n\tWRITE_ONCE(*grp->open, false);\n\n\t/* If not fully advertised, do it now to prevent mutual blocking */\n\tadv = m->advertised;\n\tstate = m->state;\n\tif (state == MBR_JOINED && adv == ADV_IDLE)\n\t\treturn true;\n\tif (state == MBR_ACTIVE && adv == ADV_ACTIVE)\n\t\treturn true;\n\tif (state == MBR_PENDING && adv == ADV_IDLE)\n\t\treturn true;\n\t__skb_queue_head_init(&xmitq);\n\ttipc_group_proto_xmit(grp, m, GRP_ADV_MSG, &xmitq);\n\ttipc_node_distr_xmit(grp->net, &xmitq);\n\treturn true;\n}\n'''
+          s = s[:start] + fn + s[end:]
+
+          start = s.index('bool tipc_group_bc_cong(')
+          end = s.index('\n/* tipc_group_sort_msg()', start)
+          fn = '''bool tipc_group_bc_cong(struct tipc_group *grp, int len)\n{\n\tstruct tipc_member *m = NULL;\n\n\t/* If prev bcast was replicast, reject until all receivers have acked */\n\tif (grp->bc_ackers) {\n\t\tWRITE_ONCE(*grp->open, false);\n\t\treturn true;\n\t}\n\tif (list_empty(&grp->small_win))\n\t\treturn false;\n\n\tm = list_first_entry(&grp->small_win, struct tipc_member, small_win);\n\tif (m->window >= len)\n\t\treturn false;\n\n\treturn tipc_group_cong(grp, m->node, m->port, len, &m);\n}\n'''
+          s = s[:start] + fn + s[end:]
+
+          # Protocol receive readiness transitions. Preserve Sweet's Apr-2026
+          # duplicate ACK guard; only replace the old usr_pending/open logic.
+          old = '''\t\t/* Member can be taken into service */\n\t\tm->state = MBR_JOINED;\n\t\t*usr_wakeup = true;\n\t\tm->usr_pending = false;\n\t\tlist_del_init(&m->small_win);\n\t\ttipc_group_update_member(m, 0);\n'''
+          new = '''\t\t/* Member can be taken into service */\n\t\tm->state = MBR_JOINED;\n\t\ttipc_group_open(m, usr_wakeup);\n\t\ttipc_group_update_member(m, 0);\n'''
+          if old not in s:
+              raise SystemExit('JOIN readiness block not found')
+          s = s.replace(old, new, 1)
+
+          old = '''\t\tm->bc_syncpt = msg_grp_bc_syncpt(hdr);\n\t\tlist_del_init(&m->list);\n\t\tlist_del_init(&m->small_win);\n\t\t*usr_wakeup = true;\n\t\ttipc_group_decr_active(grp, m);\n'''
+          new = '''\t\tm->bc_syncpt = msg_grp_bc_syncpt(hdr);\n\t\tlist_del_init(&m->list);\n\t\ttipc_group_open(m, usr_wakeup);\n\t\ttipc_group_decr_active(grp, m);\n'''
+          if old not in s:
+              raise SystemExit('LEAVE readiness block not found')
+          s = s.replace(old, new, 1)
+
+          old = '''\tcase GRP_ADV_MSG:\n\t\tif (!m)\n\t\t\treturn;\n\t\tm->window += msg_adv_win(hdr);\n\t\t*usr_wakeup = m->usr_pending;\n\t\tm->usr_pending = false;\n\t\tlist_del_init(&m->small_win);\n\t\treturn;\n'''
+          new = '''\tcase GRP_ADV_MSG:\n\t\tif (!m)\n\t\t\treturn;\n\t\tm->window += msg_adv_win(hdr);\n\t\ttipc_group_open(m, usr_wakeup);\n\t\treturn;\n'''
+          if old not in s:
+              raise SystemExit('ADV readiness block not found')
+          s = s.replace(old, new, 1)
+
+          old = '''\t\tm->bc_acked = acked;\n\t\tif (--grp->bc_ackers)\n\t\t\tbreak;\n\t\t*usr_wakeup = true;\n\t\tm->usr_pending = false;\n\t\treturn;\n'''
+          new = '''\t\tm->bc_acked = acked;\n\t\tif (--grp->bc_ackers)\n\t\t\treturn;\n\t\tlist_del_init(&m->small_win);\n\t\tWRITE_ONCE(*m->group->open, true);\n\t\t*usr_wakeup = true;\n\t\ttipc_group_update_member(m, 0);\n\t\treturn;\n'''
+          if old not in s:
+              raise SystemExit('ACK readiness block not found')
+          s = s.replace(old, new, 1)
+
+          old = '''\tcase GRP_RECLAIM_MSG:\n\t\tif (!m)\n\t\t\treturn;\n\t\t*usr_wakeup = m->usr_pending;\n\t\tm->usr_pending = false;\n\t\ttipc_group_proto_xmit(grp, m, GRP_REMIT_MSG, xmitq);\n\t\tm->window = ADV_IDLE;\n\t\treturn;\n'''
+          new = '''\tcase GRP_RECLAIM_MSG:\n\t\tif (!m)\n\t\t\treturn;\n\t\ttipc_group_proto_xmit(grp, m, GRP_REMIT_MSG, xmitq);\n\t\tm->window = ADV_IDLE;\n\t\ttipc_group_open(m, usr_wakeup);\n\t\treturn;\n'''
+          if old not in s:
+              raise SystemExit('RECLAIM readiness block not found')
+          s = s.replace(old, new, 1)
+
+          # Member topology events use the same readiness helper.
+          old = '''\t\t/* Member can be taken into service */\n\t\tm->instance = instance;\n\t\tm->state = MBR_JOINED;\n\t\t*usr_wakeup = true;\n\t\tm->usr_pending = false;\n\t\tlist_del_init(&m->small_win);\n\t\ttipc_group_update_member(m, 0);\n'''
+          new = '''\t\t/* Member can be taken into service */\n\t\tm->instance = instance;\n\t\tm->state = MBR_JOINED;\n\t\ttipc_group_open(m, usr_wakeup);\n\t\ttipc_group_update_member(m, 0);\n'''
+          if old not in s:
+              raise SystemExit('PUBLISHED event readiness block not found')
+          s = s.replace(old, new, 1)
+
+          old = '''\t\t*usr_wakeup = true;\n\t\tm->usr_pending = false;\n\t\ttipc_group_decr_active(grp, m);\n\t\tm->state = MBR_LEAVING;\n\t\tlist_del_init(&m->list);\n\t\tlist_del_init(&m->small_win);\n'''
+          new = '''\t\ttipc_group_decr_active(grp, m);\n\t\tm->state = MBR_LEAVING;\n\t\tlist_del_init(&m->list);\n\t\ttipc_group_open(m, usr_wakeup);\n'''
+          if old not in s:
+              raise SystemExit('WITHDRAW event readiness block not found')
+          s = s.replace(old, new, 1)
+
+          p.write_text(s)
+          PY
+
+          git add net/tipc/group.c
+          git diff --cached --check
+          ! grep -q "usr_pending" net/tipc/group.c
+          grep -q "static void tipc_group_open" net/tipc/group.c
+          git commit -m "tipc: align group readiness flow control with Spring" -m "Adapt upstream eb929a91 semantics onto Sweet's newer 60c253-style group_is_open socket field. Do not expose POLLOUT merely on publication discovery; open only when a congested/small-window member becomes writable."
+
+          # Remove the now-unused pre-eb929 helper.
+          python3 - <<'PY'
+          from pathlib import Path
+          for name in ('net/tipc/group.c', 'net/tipc/group.h'):
+              p = Path(name)
+              s = p.read_text()
+              if name.endswith('group.c'):
+                  block = '''int tipc_group_size(struct tipc_group *grp)\n{\n\treturn grp->member_cnt;\n}\n\n'''
+              else:
+                  block = 'int tipc_group_size(struct tipc_group *grp);\n'
+              if block not in s:
+                  raise SystemExit(f'group_size block missing in {name}')
+              p.write_text(s.replace(block, '', 1))
+          PY
+          git add net/tipc/group.c net/tipc/group.h
+          git diff --cached --check
+          git commit -m "tipc: remove unused tipc_group_size" -m "Equivalent cleanup to upstream d81d25e66a0f after group poll/readiness no longer depends on group size."
+
+          # Structural verification.
+          git diff --check HEAD~3..HEAD
+          ! grep -q "usr_pending" net/tipc/group.c
+          ! grep -q "tipc_group_size" net/tipc/group.c net/tipc/group.h
+          ! grep -q "u32 domain = addr_domain(net, mreq->scope)" net/tipc/socket.c
+          grep -q "mreq->scope > TIPC_NODE_SCOPE" net/tipc/socket.c
+          grep -q "mreq->scope = TIPC_CLUSTER_SCOPE" net/tipc/socket.c
+          grep -q "tipc_nametbl_build_group(net, grp, mreq->type, mreq->scope)" net/tipc/socket.c
+          grep -q "static void tipc_group_open" net/tipc/group.c
+          grep -q "WRITE_ONCE(\*grp->open, false)" net/tipc/group.c
+          grep -q "READ_ONCE(tsk->group_is_open)" net/tipc/socket.c
+
+          git push origin HEAD:TIPC_GROUPS_SPRING_FSM_20260915
