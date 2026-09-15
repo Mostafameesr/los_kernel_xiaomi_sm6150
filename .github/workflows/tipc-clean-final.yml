@@ -77,3 +77,5 @@ jobs:
 
           git push --force-with-lease origin \
             HEAD:TIPC_GROUPS_SPRING_FSM_CLEAN_20260915
+
+# rerun after phase 5
