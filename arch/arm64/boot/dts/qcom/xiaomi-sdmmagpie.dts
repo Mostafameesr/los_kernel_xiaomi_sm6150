@@ -33,28 +33,13 @@
 
 /*
  * Keep exactly one ramoops backend on Xiaomi SDMMAGPIE devices.
- * The original platform tree already reserves 4 MiB at 0x9d800000
- * explicitly for pstore.  The 0xb0000000 ramoops node was added later;
- * remove that duplicate and use the original platform reservation.
+ * The platform's original 4 MiB pstore reservation is ramoops@9d800000.
+ * Match the known-working crDroid Sweet layout by dropping the later
+ * duplicate ramoops@b0000000 node and leaving ramoops_mem untouched:
+ * 2 MiB dmesg record + 2 MiB pmsg, ECC 16, max-reason 4.
  */
 &reserved_memory {
 	/delete-node/ ramoops@b0000000;
-};
-
-/*
- * 4 MiB persistent RAM layout:
- *   1536 KiB dmesg (3 x 512 KiB records)
- *   2048 KiB console (continuously written)
- *    512 KiB pmsg
- * max-reason 4 includes panic, oops, emergency and restart dumps.
- * ECC is kept enabled for all persistent RAM zones.
- */
-&ramoops_mem {
-	record-size = <0x00080000>;
-	console-size = <0x00200000>;
-	pmsg-size = <0x00080000>;
-	ecc-size = <16>;
-	max-reason = <4>;
 };
 
 &pm6150l_lcdb {
