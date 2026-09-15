@@ -2760,7 +2760,6 @@ void tipc_sk_rht_destroy(struct net *net)
 static int tipc_sk_join(struct tipc_sock *tsk, struct tipc_group_req *mreq)
 {
 	struct net *net = sock_net(&tsk->sk);
-	u32 domain = addr_domain(net, mreq->scope);
 	struct tipc_group *grp = tsk->group;
 	struct tipc_msg *hdr = &tsk->phdr;
 	struct tipc_name_seq seq;
@@ -2768,6 +2767,10 @@ static int tipc_sk_join(struct tipc_sock *tsk, struct tipc_group_req *mreq)
 
 	if (mreq->type < TIPC_RESERVED_TYPES)
 		return -EACCES;
+	if (mreq->scope > TIPC_NODE_SCOPE)
+		return -EINVAL;
+	if (mreq->scope != TIPC_NODE_SCOPE)
+		mreq->scope = TIPC_CLUSTER_SCOPE;
 	if (grp)
 		return -EACCES;
 	grp = tipc_group_create(net, tsk->portid, mreq,
@@ -2781,7 +2784,7 @@ static int tipc_sk_join(struct tipc_sock *tsk, struct tipc_group_req *mreq)
 	seq.type = mreq->type;
 	seq.lower = mreq->instance;
 	seq.upper = seq.lower;
-	tipc_nametbl_build_group(net, grp, mreq->type, domain);
+	tipc_nametbl_build_group(net, grp, mreq->type, mreq->scope);
 	rc = tipc_sk_publish(tsk, mreq->scope, &seq);
 	if (rc) {
 		tipc_group_delete(net, grp);
