@@ -14,11 +14,20 @@ jobs:
   backport:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout work branch shallow
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-          ref: TIPC_GROUPS_SPRING_FSM_20260915
+      - name: Partial sparse checkout
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git config remote.origin.promisor true
+          git config remote.origin.partialclonefilter blob:none
+          git sparse-checkout init --cone
+          git sparse-checkout set net/tipc include/uapi/linux
+          git fetch --no-tags --depth=1 --filter=blob:none origin TIPC_GROUPS_SPRING_FSM_20260915
+          git checkout -B TIPC_GROUPS_SPRING_FSM_20260915 FETCH_HEAD
 
       - name: Apply upstream TIPC group FSM prerequisites
         shell: bash
@@ -39,7 +48,7 @@ jobs:
           )
 
           for c in "${commits[@]}"; do
-            git fetch --no-tags --depth=1 linux-upstream "$c"
+            git fetch --no-tags --depth=1 --filter=blob:none linux-upstream "$c"
             git cherry-pick FETCH_HEAD
           done
 
