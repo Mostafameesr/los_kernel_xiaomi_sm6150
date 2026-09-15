@@ -74,7 +74,6 @@ struct tipc_member {
 	u16 bc_rcv_nxt;
 	u16 bc_syncpt;
 	u16 bc_acked;
-	bool usr_pending;
 };
 
 struct tipc_group {
@@ -101,6 +100,16 @@ struct tipc_group {
 
 static void tipc_group_proto_xmit(struct tipc_group *grp, struct tipc_member *m,
 				  int mtyp, struct sk_buff_head *xmitq);
+
+static void tipc_group_open(struct tipc_member *m, bool *wakeup)
+{
+	*wakeup = false;
+	if (list_empty(&m->small_win))
+		return;
+	list_del_init(&m->small_win);
+	WRITE_ONCE(*m->group->open, true);
+	*wakeup = true;
+}
 
 static void tipc_group_decr_active(struct tipc_group *grp,
 				   struct tipc_member *m)
@@ -320,7 +329,6 @@ static struct tipc_member *tipc_group_create_member(struct tipc_group *grp,
 		return NULL;
 	}
 	grp->member_cnt++;
-	WRITE_ONCE(*grp->open, true);
 	tipc_nlist_add(&grp->dests, m->node);
 	m->state = state;
 	return m;
@@ -337,8 +345,6 @@ static void tipc_group_delete_member(struct tipc_group *grp,
 {
 	rb_erase(&m->tree_node, &grp->members);
 	grp->member_cnt--;
-	if (!grp->member_cnt)
-		WRITE_ONCE(*grp->open, false);
 
 	/* Check if we were waiting for replicast ack from this member */
 	if (grp->bc_ackers && less(m->bc_acked, grp->bc_snd_nxt - 1))
@@ -422,27 +428,27 @@ bool tipc_group_cong(struct tipc_group *grp, u32 dnode, u32 dport,
 	int adv, state;
 
 	m = tipc_group_find_dest(grp, dnode, dport);
-	*mbr = m;
-	if (!m)
+	if (!tipc_group_is_receiver(m)) {
+		*mbr = NULL;
 		return false;
-	if (m->usr_pending)
-		return true;
+	}
+	*mbr = m;
+
 	if (m->window >= len)
 		return false;
-	m->usr_pending = true;
+
+	WRITE_ONCE(*grp->open, false);
 
 	/* If not fully advertised, do it now to prevent mutual blocking */
 	adv = m->advertised;
 	state = m->state;
-	if (state < MBR_JOINED)
-		return true;
 	if (state == MBR_JOINED && adv == ADV_IDLE)
 		return true;
 	if (state == MBR_ACTIVE && adv == ADV_ACTIVE)
 		return true;
 	if (state == MBR_PENDING && adv == ADV_IDLE)
 		return true;
-	skb_queue_head_init(&xmitq);
+	__skb_queue_head_init(&xmitq);
 	tipc_group_proto_xmit(grp, m, GRP_ADV_MSG, &xmitq);
 	tipc_node_distr_xmit(grp->net, &xmitq);
 	return true;
@@ -453,9 +459,10 @@ bool tipc_group_bc_cong(struct tipc_group *grp, int len)
 	struct tipc_member *m = NULL;
 
 	/* If prev bcast was replicast, reject until all receivers have acked */
-	if (grp->bc_ackers)
+	if (grp->bc_ackers) {
+		WRITE_ONCE(*grp->open, false);
 		return true;
-
+	}
 	if (list_empty(&grp->small_win))
 		return false;
 
@@ -771,9 +778,7 @@ void tipc_group_proto_rcv(struct tipc_group *grp, bool *usr_wakeup,
 
 		/* Member can be taken into service */
 		m->state = MBR_JOINED;
-		*usr_wakeup = true;
-		m->usr_pending = false;
-		list_del_init(&m->small_win);
+		tipc_group_open(m, usr_wakeup);
 		tipc_group_update_member(m, 0);
 		tipc_group_proto_xmit(grp, m, GRP_ADV_MSG, xmitq);
 		tipc_group_create_event(grp, m, TIPC_PUBLISHED,
@@ -784,8 +789,7 @@ void tipc_group_proto_rcv(struct tipc_group *grp, bool *usr_wakeup,
 			return;
 		m->bc_syncpt = msg_grp_bc_syncpt(hdr);
 		list_del_init(&m->list);
-		list_del_init(&m->small_win);
-		*usr_wakeup = true;
+		tipc_group_open(m, usr_wakeup);
 		tipc_group_decr_active(grp, m);
 		m->state = MBR_LEAVING;
 		tipc_group_create_event(grp, m, TIPC_WITHDRAWN,
@@ -795,9 +799,7 @@ void tipc_group_proto_rcv(struct tipc_group *grp, bool *usr_wakeup,
 		if (!m)
 			return;
 		m->window += msg_adv_win(hdr);
-		*usr_wakeup = m->usr_pending;
-		m->usr_pending = false;
-		list_del_init(&m->small_win);
+		tipc_group_open(m, usr_wakeup);
 		return;
 	case GRP_ACK_MSG:
 		if (!m)
@@ -807,17 +809,18 @@ void tipc_group_proto_rcv(struct tipc_group *grp, bool *usr_wakeup,
 			return;
 		m->bc_acked = acked;
 		if (--grp->bc_ackers)
-			break;
+			return;
+		list_del_init(&m->small_win);
+		WRITE_ONCE(*m->group->open, true);
 		*usr_wakeup = true;
-		m->usr_pending = false;
+		tipc_group_update_member(m, 0);
 		return;
 	case GRP_RECLAIM_MSG:
 		if (!m)
 			return;
-		*usr_wakeup = m->usr_pending;
-		m->usr_pending = false;
 		tipc_group_proto_xmit(grp, m, GRP_REMIT_MSG, xmitq);
 		m->window = ADV_IDLE;
+		tipc_group_open(m, usr_wakeup);
 		return;
 	case GRP_REMIT_MSG:
 		if (!m || m->state != MBR_RECLAIMING)
@@ -903,9 +906,7 @@ void tipc_group_member_evt(struct tipc_group *grp,
 		/* Member can be taken into service */
 		m->instance = instance;
 		m->state = MBR_JOINED;
-		*usr_wakeup = true;
-		m->usr_pending = false;
-		list_del_init(&m->small_win);
+		tipc_group_open(m, usr_wakeup);
 		tipc_group_update_member(m, 0);
 		tipc_group_proto_xmit(grp, m, GRP_JOIN_MSG, xmitq);
 		tipc_group_create_event(grp, m, TIPC_PUBLISHED,
@@ -915,12 +916,10 @@ void tipc_group_member_evt(struct tipc_group *grp,
 		if (!m)
 			break;
 
-		*usr_wakeup = true;
-		m->usr_pending = false;
 		tipc_group_decr_active(grp, m);
 		m->state = MBR_LEAVING;
 		list_del_init(&m->list);
-		list_del_init(&m->small_win);
+		tipc_group_open(m, usr_wakeup);
 
 		/* Only send event if no LEAVE message can be expected */
 		if (!tipc_node_is_up(net, node))
