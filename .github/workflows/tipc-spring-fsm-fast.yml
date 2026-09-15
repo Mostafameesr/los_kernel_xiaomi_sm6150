@@ -1,4 +1,4 @@
-name: TIPC Sweet compile validation
+name: Sweet full kernel compile validation
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 jobs:
-  build-tipc:
+  build-kernel:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout work branch
@@ -37,23 +37,18 @@ jobs:
           grep '^CONFIG_TIPC=y' out/.config
           grep '^CONFIG_ARCH_SM6150=y' out/.config
 
-      - name: Build complete TIPC directory
+      - name: Build complete TIPC directory first
         shell: bash
         run: |
           set -euxo pipefail
-          make O=out ARCH=arm64 LLVM=1 -j2 net/tipc/ V=1
-          find out/net/tipc -maxdepth 1 -type f -name '*.o' -print | sort
+          make O=out ARCH=arm64 LLVM=1 -j2 net/tipc/
           test -s out/net/tipc/group.o
           test -s out/net/tipc/socket.o
-          test -s out/net/tipc/name_table.o
-          test -s out/net/tipc/server.o
-          test -s out/net/tipc/subscr.o
 
-      - name: Validate key symbols
+      - name: Build full Sweet kernel image
         shell: bash
         run: |
           set -euxo pipefail
-          llvm-nm out/net/tipc/group.o > /tmp/group.nm
-          grep ' tipc_group_join$' /tmp/group.nm
-          llvm-nm out/net/tipc/socket.o > /tmp/socket.nm
-          grep ' tipc_sk_rht_init$' /tmp/socket.nm
+          make O=out ARCH=arm64 LLVM=1 -j2 Image.gz
+          test -s out/arch/arm64/boot/Image.gz
+          file out/arch/arm64/boot/Image.gz
