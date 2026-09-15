@@ -28,10 +28,6 @@ jobs:
           git sparse-checkout set net/tipc include/uapi/linux
           git fetch --no-tags --depth=1 --filter=blob:none origin TIPC_GROUPS_SPRING_FSM_20260915
           git checkout -B TIPC_GROUPS_SPRING_FSM_20260915 FETCH_HEAD
-
-          # Materialize every current file that the upstream diffs can touch
-          # while Sweet is still the promisor remote. This keeps later patch
-          # application independent from cross-repository lazy-object lookup.
           find net/tipc include/uapi/linux -type f -print0 | xargs -0 cat >/dev/null
 
       - name: Apply Spring group join and topology semantics
@@ -40,6 +36,31 @@ jobs:
           set -euxo pipefail
           git config user.name "TIPC backport bot"
           git config user.email "tipc-backport@users.noreply.github.com"
+
+          # d12d benefits from git's 3-way merge against the old TIPC baseline.
+          # Use upstream as promisor only for this one commit, then return to
+          # direct upstream diffs for the rest.
+          git remote add linux-upstream https://github.com/torvalds/linux.git
+          git config remote.origin.promisor false
+          git config remote.linux-upstream.promisor true
+          git config remote.linux-upstream.partialclonefilter blob:none
+          git config extensions.partialClone linux-upstream
+
+          c=d12d2e12cec2d66eab6cd58f592dad9fd386b97d
+          git fetch --no-tags --depth=2 --filter=blob:none linux-upstream "$c"
+          if ! git cherry-pick FETCH_HEAD; then
+            conflicts="$(git diff --name-only --diff-filter=U)"
+            test "$conflicts" = "net/tipc/group.h"
+            git checkout --ours net/tipc/group.h
+            perl -0pi -e 's/(bool \*group_is_open\);\n)/$1void tipc_group_join(struct net *net, struct tipc_group *grp, int *sk_rcv_buf);\n/' net/tipc/group.h
+            perl -0pi -e 's/void tipc_group_add_member\(struct tipc_group \*grp, u32 node, u32 port\);/void tipc_group_add_member(struct tipc_group *grp, u32 node,\n\t\t\t   u32 port, u32 instance);/' net/tipc/group.h
+            git add net/tipc/group.h
+            git cherry-pick --continue
+          fi
+
+          git config --unset extensions.partialClone || true
+          git config --unset remote.linux-upstream.promisor || true
+          git config --unset remote.linux-upstream.partialclonefilter || true
 
           apply_upstream_diff() {
             c="$1"
@@ -55,24 +76,11 @@ jobs:
             git commit --author="Jon Maloy <jon.maloy@ericsson.com>" -m "$title" -m "Backported from upstream commit $c while preserving Sweet-specific newer hardening."
           }
 
-          # d12d2e12 predates the poll/setsockopt race fix already present in
-          # Sweet. Apply all of its code except group.h, then merge group.h by
-          # retaining bool *group_is_open and adding the new JOIN API/instance.
-          c=d12d2e12cec2d66eab6cd58f592dad9fd386b97d
-          curl -fsSL "https://github.com/torvalds/linux/commit/${c}.diff" -o "/tmp/${c}.diff"
-          git apply --check --exclude=net/tipc/group.h "/tmp/${c}.diff"
-          git apply --exclude=net/tipc/group.h "/tmp/${c}.diff"
-          perl -0pi -e 's/(bool \*group_is_open\);\n)/$1void tipc_group_join(struct net *net, struct tipc_group *grp, int *sk_rcv_buf);\n/' net/tipc/group.h
-          perl -0pi -e 's/void tipc_group_add_member\(struct tipc_group \*grp, u32 node, u32 port\);/void tipc_group_add_member(struct tipc_group *grp, u32 node,\n\t\t\t   u32 port, u32 instance);/' net/tipc/group.h
-          git add -A
-          git commit --author="Jon Maloy <jon.maloy@ericsson.com>" -m "tipc: send out join messages as soon as new member is discovered" -m "Backported from upstream commit $c while retaining Sweet's newer group_is_open socket-state ABI."
-
           apply_upstream_diff 8348500f80d5660af29c475e1f15d412d83564c9 "tipc: add option to suppress PUBLISH events for pre-existing publications"
           apply_upstream_diff 232d07b74a33b9f5d48516dc1d8ce41723ada593 "tipc: improve groupcast scope handling"
 
-          # Follow-up safety fix for immediate JOIN. Sweet additionally keeps
-          # group_is_open true after tearing down a failed join, so preserve
-          # that newer state handling and return before tipc_group_join().
+          # Follow-up safety fix for immediate JOIN, adapted to Sweet's newer
+          # group_is_open state reset.
           python3 - <<'PY'
           from pathlib import Path
           p = Path('net/tipc/socket.c')
@@ -95,6 +103,5 @@ jobs:
           grep -q "TIPC_SUB_NO_STATUS" net/tipc/server.h
           grep -q "TIPC_SUB_NO_STATUS" net/tipc/group.c
           grep -q "bool \*group_is_open" net/tipc/group.h
-          grep -q "return rc;" net/tipc/socket.c
 
           git push origin HEAD:TIPC_GROUPS_SPRING_FSM_20260915
