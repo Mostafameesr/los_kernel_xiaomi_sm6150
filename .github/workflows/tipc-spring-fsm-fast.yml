@@ -27,48 +27,33 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc bison flex libelf-dev libssl-dev llvm lld
 
-      - name: Show toolchain
+      - name: Generate Sweet configuration
         shell: bash
         run: |
           set -euxo pipefail
           clang --version
           ld.lld --version
-          llvm-ar --version
-          llvm-nm --version
-
-      - name: Generate Sweet configuration
-        shell: bash
-        run: |
-          set -euxo pipefail
           make O=out ARCH=arm64 LLVM=1 vendor/sweet_defconfig
           grep '^CONFIG_TIPC=y' out/.config
           grep '^CONFIG_ARCH_SM6150=y' out/.config
 
-      - name: Build TIPC objects
+      - name: Build complete TIPC directory
         shell: bash
         run: |
           set -euxo pipefail
-          make O=out ARCH=arm64 LLVM=1 -j2 net/tipc/built-in.o V=1
-          test -s out/net/tipc/built-in.o
-          file out/net/tipc/built-in.o
+          make O=out ARCH=arm64 LLVM=1 -j2 net/tipc/ V=1
+          find out/net/tipc -maxdepth 1 -type f -name '*.o' -print | sort
+          test -s out/net/tipc/group.o
+          test -s out/net/tipc/socket.o
+          test -s out/net/tipc/name_table.o
+          test -s out/net/tipc/server.o
+          test -s out/net/tipc/subscr.o
 
-      - name: Compile changed TIPC translation units explicitly
-        shell: bash
-        run: |
-          set -euxo pipefail
-          make O=out ARCH=arm64 LLVM=1 -j2 \
-            net/tipc/group.o \
-            net/tipc/socket.o \
-            net/tipc/name_table.o \
-            net/tipc/server.o \
-            net/tipc/subscr.o V=1
-          for f in group socket name_table server subscr; do
-            test -s "out/net/tipc/${f}.o"
-          done
-
-      - name: Check generated objects
+      - name: Validate key symbols
         shell: bash
         run: |
           set -euxo pipefail
           llvm-nm out/net/tipc/group.o > /tmp/group.nm
           grep ' tipc_group_join$' /tmp/group.nm
+          llvm-nm out/net/tipc/socket.o > /tmp/socket.nm
+          grep ' tipc_sk_rht_init$' /tmp/socket.nm
