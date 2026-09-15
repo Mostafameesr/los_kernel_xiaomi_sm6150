@@ -53,7 +53,7 @@ struct tipc_nlist *tipc_group_dests(struct tipc_group *grp);
 void tipc_group_self(struct tipc_group *grp, struct tipc_name_seq *seq,
 		     int *scope);
 u32 tipc_group_exclude(struct tipc_group *grp);
-bool tipc_group_filter_msg(struct tipc_group *grp,
+void tipc_group_filter_msg(struct tipc_group *grp,
 			   struct sk_buff_head *inputq,
 			   struct sk_buff_head *xmitq);
 void tipc_group_member_evt(struct tipc_group *grp, bool *wakeup,

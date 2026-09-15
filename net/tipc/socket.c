@@ -2124,8 +2124,8 @@ static void tipc_sk_filter_rcv(struct sock *sk, struct sk_buff *skb,
 	if (unlikely(!msg_isdata(hdr)))
 		tipc_sk_proto_rcv(sk, &inputq, xmitq);
 
-	if (unlikely(grp) && tipc_group_filter_msg(grp, &inputq, xmitq))
-		sk->sk_write_space(sk);
+	if (unlikely(grp))
+		tipc_group_filter_msg(grp, &inputq, xmitq);
 
 	/* Validate and add to receive buffer if there is space */
 	while ((skb = __skb_dequeue(&inputq))) {
