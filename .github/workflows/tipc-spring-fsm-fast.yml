@@ -37,6 +37,15 @@ jobs:
           git config user.email "tipc-backport@users.noreply.github.com"
           git remote add linux-upstream https://github.com/torvalds/linux.git || true
 
+          # The Sweet remote is used only to obtain the sparse worktree.
+          # During cherry-pick, any lazily requested objects must come from
+          # the upstream commit's repository, not from Sweet.
+          git config --unset remote.origin.promisor || true
+          git config --unset remote.origin.partialclonefilter || true
+          git config remote.linux-upstream.promisor true
+          git config remote.linux-upstream.partialclonefilter blob:none
+          git config extensions.partialClone linux-upstream
+
           commits=(
             38266ca17c5f142a25d4563335e143cbd62e65a7
             d84d1b3b6b8c296de8d394002bc3a0ca910d7460
@@ -48,7 +57,7 @@ jobs:
           )
 
           for c in "${commits[@]}"; do
-            git fetch --no-tags --depth=1 --filter=blob:none linux-upstream "$c"
+            git fetch --no-tags --depth=2 --filter=blob:none linux-upstream "$c"
             git cherry-pick FETCH_HEAD
           done
 
@@ -60,4 +69,6 @@ jobs:
           grep -q "MBR_DISCOVERED" net/tipc/group.c
           grep -q "small_win" net/tipc/group.c
 
+          # Restore normal origin semantics for the write-back.
+          git config --unset extensions.partialClone || true
           git push origin HEAD:TIPC_GROUPS_SPRING_FSM_20260915
