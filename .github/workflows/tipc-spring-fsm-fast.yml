@@ -1,4 +1,4 @@
-name: TIPC Spring FSM phase 2
+name: TIPC Spring FSM phase 2 final runner
 
 on:
   push:
@@ -14,7 +14,7 @@ jobs:
   backport:
     runs-on: ubuntu-latest
     steps:
-      - name: Partial sparse checkout
+      - name: Sparse checkout work branch
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -25,235 +25,39 @@ jobs:
           git config remote.origin.promisor true
           git config remote.origin.partialclonefilter blob:none
           git sparse-checkout init --cone
-          git sparse-checkout set net/tipc include/uapi/linux
-          git fetch --no-tags --depth=1 --filter=blob:none origin TIPC_GROUPS_SPRING_FSM_20260915
+          git sparse-checkout set net/tipc include/uapi/linux .github/workflows
+          git fetch --no-tags --depth=2 --filter=blob:none origin TIPC_GROUPS_SPRING_FSM_20260915
           git checkout -B TIPC_GROUPS_SPRING_FSM_20260915 FETCH_HEAD
           find net/tipc include/uapi/linux -type f -print0 | xargs -0 cat >/dev/null
 
-      - name: Apply Spring group join and topology semantics
+      - name: Execute reviewed phase2 backport script
         shell: bash
         run: |
-          set -euxo pipefail
-          git config user.name "TIPC backport bot"
-          git config user.email "tipc-backport@users.noreply.github.com"
-
-          # d12d2e12: use 3-way merge because Sweet already carries newer
-          # poll/readiness hardening. The only expected conflict is group.h.
-          git remote add linux-upstream https://github.com/torvalds/linux.git
-          git config remote.origin.promisor false
-          git config remote.linux-upstream.promisor true
-          git config remote.linux-upstream.partialclonefilter blob:none
-          git config extensions.partialClone linux-upstream
-          c=d12d2e12cec2d66eab6cd58f592dad9fd386b97d
-          git fetch --no-tags --depth=2 --filter=blob:none linux-upstream "$c"
-          if ! git cherry-pick FETCH_HEAD; then
-            conflicts="$(git diff --name-only --diff-filter=U)"
-            test "$conflicts" = "net/tipc/group.h"
-            git checkout --ours net/tipc/group.h
-            perl -0pi -e 's/(bool \*group_is_open\);\n)/$1void tipc_group_join(struct net *net, struct tipc_group *grp, int *sk_rcv_buf);\n/' net/tipc/group.h
-            perl -0pi -e 's/void tipc_group_add_member\(struct tipc_group \*grp, u32 node, u32 port\);/void tipc_group_add_member(struct tipc_group *grp, u32 node,\n\t\t\t   u32 port, u32 instance);/' net/tipc/group.h
-            git add net/tipc/group.h
-            git cherry-pick --continue
-          fi
-          git config --unset extensions.partialClone || true
-          git config --unset remote.linux-upstream.promisor || true
-          git config --unset remote.linux-upstream.partialclonefilter || true
-
-          # 8348500f: suppress duplicate initial PUBLISH status events.
-          # Apply untouched files verbatim; adapt group.c/server.c only where
-          # Sweet has newer bool *open and u64 usr_handle handling.
-          c=8348500f80d5660af29c475e1f15d412d83564c9
-          curl -fsSL "https://github.com/torvalds/linux/commit/${c}.diff" -o "/tmp/${c}.diff"
-          git apply --check --exclude=net/tipc/group.c --exclude=net/tipc/server.c "/tmp/${c}.diff"
-          git apply --exclude=net/tipc/group.c --exclude=net/tipc/server.c "/tmp/${c}.diff"
+          set -euo pipefail
           python3 - <<'PY'
+          import subprocess
           from pathlib import Path
 
-          p = Path('net/tipc/group.c')
-          s = p.read_text()
-          old = '''struct tipc_group *tipc_group_create(struct net *net, u32 portid,\n\t\t\t\t     struct tipc_group_req *mreq,\n\t\t\t\t     bool *group_is_open)\n{\n\tstruct tipc_group *grp;\n\tu32 type = mreq->type;\n'''
-          new = '''struct tipc_group *tipc_group_create(struct net *net, u32 portid,\n\t\t\t\t     struct tipc_group_req *mreq,\n\t\t\t\t     bool *group_is_open)\n{\n\tu32 filter = TIPC_SUB_PORTS | TIPC_SUB_NO_STATUS;\n\tstruct tipc_group *grp;\n\tu32 type = mreq->type;\n'''
-          if old not in s:
-              raise SystemExit('834: group create header target not found')
-          s = s.replace(old, new, 1)
-          old = '''\tif (tipc_topsrv_kern_subscr(net, portid, type, 0, ~0, &grp->subid)) {\n\t\tWRITE_ONCE(*grp->open, false);\n\t\treturn grp;\n\t}\n'''
-          new = '''\tif (tipc_topsrv_kern_subscr(net, portid, type, filter,\n\t\t\t\t    0, ~0, &grp->subid)) {\n\t\tWRITE_ONCE(*grp->open, false);\n\t\treturn grp;\n\t}\n'''
-          if old not in s:
-              raise SystemExit('834: group subscription target not found')
-          p.write_text(s.replace(old, new, 1))
-
-          p = Path('net/tipc/server.c')
-          s = p.read_text()
-          old = '''bool tipc_topsrv_kern_subscr(struct net *net, u32 port, u32 type,\n\t\t\t     u32 lower, u32 upper, int *conid)\n'''
-          new = '''bool tipc_topsrv_kern_subscr(struct net *net, u32 port, u32 type,\n\t\t\t     u32 filter, u32 lower, u32 upper, int *conid)\n'''
-          if old not in s:
-              raise SystemExit('834: server signature target not found')
-          s = s.replace(old, new, 1)
-          if '\tsub.filter = TIPC_SUB_PORTS;\n' not in s:
-              raise SystemExit('834: server filter target not found')
-          s = s.replace('\tsub.filter = TIPC_SUB_PORTS;\n', '\tsub.filter = filter;\n', 1)
-          p.write_text(s)
+          text = subprocess.check_output(
+              ['git', 'show', 'HEAD^:.github/workflows/tipc-spring-fsm-fast.yml'],
+              text=True,
+          )
+          marker = '      - name: Apply Spring group join and topology semantics\n'
+          pos = text.index(marker)
+          pos = text.index('        run: |\n', pos) + len('        run: |\n')
+          body = []
+          for line in text[pos:].splitlines(True):
+              if line.strip() and not line.startswith('          '):
+                  break
+              if line.startswith('          '):
+                  body.append(line[10:])
+              else:
+                  body.append(line)
+          script = ''.join(body)
+          if 'git diff --check HEAD~7..HEAD' not in script:
+              raise SystemExit('expected reviewed phase2 verification line not found')
+          script = script.replace('git diff --check HEAD~7..HEAD',
+                                  'git diff --check HEAD~6..HEAD', 1)
+          Path('/tmp/tipc-phase2.sh').write_text(script)
           PY
-          git add -A
-          git commit --author="Jon Maloy <jon.maloy@ericsson.com>" -m "tipc: add option to suppress PUBLISH events for pre-existing publications" -m "Backported from upstream 8348500f80d5660af29c475e1f15d412d83564c9; preserves Sweet's bool *group_is_open and u64 topology usr_handle handling."
-
-          # c545a945: a reference obtained by tipc_skb_peek() may hit zero here;
-          # use kfree_skb() rather than a bare refcount decrement.
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('net/tipc/socket.c')
-          s = p.read_text()
-          start = s.index('void tipc_sk_mcast_rcv(')
-          end = s.index('/**\n * tipc_sk_conn_proto_rcv', start)
-          chunk = s[start:end]
-          old = '\t\t\trefcount_dec(&skb->users);\n'
-          if chunk.count(old) != 1:
-              raise SystemExit(f'c545: expected one refcount_dec in mcast_rcv, got {chunk.count(old)}')
-          chunk = chunk.replace(old, '\t\t\tkfree_skb(skb);\n', 1)
-          p.write_text(s[:start] + chunk + s[end:])
-          PY
-          git add net/tipc/socket.c
-          git commit --author="Jon Maloy <jon.maloy@ericsson.com>" -m "tipc: eliminate potential memory leak" -m "Backported from upstream c545a945d0d9ea2ea2c7d23d43cf0d86e32cd7cf."
-
-          # 232d07b7: scope becomes part of group identity. Apply all clean
-          # non-socket hunks, then resolve the two known Sweet divergences
-          # manually. Socket group send paths are ported functionally below so
-          # we retain Sweet's newer dynamic tsk->group safety across sleeps.
-          c=232d07b74a33b9f5d48516dc1d8ce41723ada593
-          curl -fsSL "https://github.com/torvalds/linux/commit/${c}.diff" -o "/tmp/${c}.diff"
-          set +e
-          git apply --reject --whitespace=nowarn --exclude=net/tipc/socket.c "/tmp/${c}.diff"
-          patch_rc=$?
-          set -e
-          test "$patch_rc" -ne 0
-          rejects="$(find net/tipc include/uapi/linux -name '*.rej' -print | sort)"
-          printf '%s\n' "$rejects"
-          test "$rejects" = $'net/tipc/group.c.rej\nnet/tipc/name_table.c.rej'
-
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          # group.c: preserve Sweet's bool *open readiness model while taking
-          # exact scope filtering and node-scope receive gate from 232d07.
-          p = Path('net/tipc/group.c')
-          s = p.read_text()
-          s = s.replace('\tu32 domain;\n', '', 1)
-          s = s.replace('\tgrp->domain = addr_domain(net, mreq->scope);\n', '', 1)
-          marker = '\tu32 filter = TIPC_SUB_PORTS | TIPC_SUB_NO_STATUS;\n'
-          if marker not in s:
-              raise SystemExit('232: filter declaration missing after 834')
-          if '\tbool global = mreq->scope != TIPC_NODE_SCOPE;\n' not in s:
-              s = s.replace(marker, marker + '\tbool global = mreq->scope != TIPC_NODE_SCOPE;\n', 1)
-          old = '''\tif (tipc_topsrv_kern_subscr(net, portid, type, filter,\n\t\t\t\t    0, ~0, &grp->subid)) {\n\t\tWRITE_ONCE(*grp->open, false);\n\t\treturn grp;\n\t}\n'''
-          new = '''\tfilter |= global ? TIPC_SUB_CLUSTER_SCOPE : TIPC_SUB_NODE_SCOPE;\n\tif (tipc_topsrv_kern_subscr(net, portid, type, 0, ~0,\n\t\t\t\t    filter, &grp->subid)) {\n\t\tWRITE_ONCE(*grp->open, false);\n\t\treturn grp;\n\t}\n'''
-          if old not in s:
-              raise SystemExit('232: Sweet group subscription block not found')
-          s = s.replace(old, new, 1)
-          gate = '\tif (grp->scope == TIPC_NODE_SCOPE && node != tipc_own_addr(grp->net))\n\t\treturn;\n\n'
-          proto = 'void tipc_group_proto_rcv(struct tipc_group *grp, bool *usr_wakeup,'
-          pos = s.index(proto)
-          null_block = '\tif (!grp)\n\t\treturn;\n\n'
-          npos = s.index(null_block, pos) + len(null_block)
-          if gate not in s[pos:pos + 1200]:
-              s = s[:npos] + gate + s[npos:]
-          p.write_text(s)
-
-          # name_table.c: only this hunk rejects because Sweet already fixed
-          # the iterator condition order. Replace the whole function with the
-          # 232 form, preserving the safe "sseq != stop" test first.
-          p = Path('net/tipc/name_table.c')
-          s = p.read_text()
-          start = s.index('void tipc_nametbl_lookup_dst_nodes(')
-          end = s.index('/* tipc_nametbl_build_group', start)
-          fn = '''void tipc_nametbl_lookup_dst_nodes(struct net *net, u32 type, u32 lower,\n\t\t\t\t   u32 upper, u32 scope,\n\t\t\t\t   struct tipc_nlist *nodes)\n{\n\tstruct sub_seq *sseq, *stop;\n\tstruct publication *publ;\n\tstruct name_info *info;\n\tstruct name_seq *seq;\n\n\trcu_read_lock();\n\tseq = nametbl_find_seq(net, type);\n\tif (!seq)\n\t\tgoto exit;\n\n\tspin_lock_bh(&seq->lock);\n\tsseq = seq->sseqs + nameseq_locate_subseq(seq, lower);\n\tstop = seq->sseqs + seq->first_free;\n\tfor (; sseq != stop && sseq->lower <= upper; sseq++) {\n\t\tinfo = sseq->info;\n\t\tlist_for_each_entry(publ, &info->zone_list, zone_list) {\n\t\t\tif (publ->scope == scope)\n\t\t\t\ttipc_nlist_add(nodes, publ->node);\n\t\t}\n\t}\n\tspin_unlock_bh(&seq->lock);\nexit:\n\trcu_read_unlock();\n}\n\n'''
-          p.write_text(s[:start] + fn + s[end:])
-
-          # socket.c anycast: use the group's published lookup scope but keep
-          # current tsk->group revalidation after every sleep.
-          p = Path('net/tipc/socket.c')
-          s = p.read_text()
-          start = s.index('static int tipc_send_group_anycast(')
-          end = s.index('/**\n * tipc_send_group_bcast', start)
-          chunk = s[start:end]
-          chunk = chunk.replace('\tstruct net *net = sock_net(sk);\n', '\tstruct net *net = sock_net(sk);\n\tstruct tipc_msg *hdr = &tsk->phdr;\n', 1)
-          chunk = chunk.replace('\tu32 type, inst, domain;\n', '\tu32 type, inst, scope;\n', 1)
-          chunk = chunk.replace('\ttype = dest->addr.name.name.type;\n', '\ttype = msg_nametype(hdr);\n', 1)
-          chunk = chunk.replace('\tdomain = addr_domain(net, dest->scope);\n', '\tscope = msg_lookup_scope(hdr);\n', 1)
-          chunk = chunk.replace('tipc_nametbl_lookup(net, type, inst, domain,', 'tipc_nametbl_lookup(net, type, inst, scope,', 1)
-          if 'domain' in chunk:
-              raise SystemExit('232: stale domain remains in group anycast')
-          s = s[:start] + chunk + s[end:]
-
-          # socket.c group multicast: exact lookup by group scope, while using
-          # existing tsk->group object for exclusion/send behavior.
-          start = s.index('static int tipc_send_group_mcast(')
-          end = s.index('/**\n * tipc_sk_mcast_rcv', start)
-          chunk = s[start:end]
-          old = '''\tstruct tipc_name_seq *seq = &dest->addr.nameseq;\n\tstruct tipc_sock *tsk = tipc_sk(sk);\n\tstruct tipc_group *grp = tsk->group;\n\tstruct net *net = sock_net(sk);\n\tu32 domain, exclude, dstcnt;\n'''
-          new = '''\tstruct tipc_sock *tsk = tipc_sk(sk);\n\tstruct tipc_group *grp = tsk->group;\n\tstruct tipc_msg *hdr = &tsk->phdr;\n\tstruct net *net = sock_net(sk);\n\tu32 type, inst, scope, exclude, dstcnt;\n'''
-          if old not in chunk:
-              raise SystemExit('232: group mcast declaration block not found')
-          chunk = chunk.replace(old, new, 1)
-          old = '''\tif (seq->lower != seq->upper)\n\t\treturn -ENOTSUPP;\n\n\tdomain = addr_domain(net, dest->scope);\n\texclude = tipc_group_exclude(grp);\n\tif (!tipc_nametbl_lookup(net, seq->type, seq->lower, domain,\n\t\t\t\t &dsts, &dstcnt, exclude, true))\n'''
-          new = '''\ttype = msg_nametype(hdr);\n\tinst = dest->addr.name.name.instance;\n\tscope = msg_lookup_scope(hdr);\n\texclude = tipc_group_exclude(grp);\n\tif (!tipc_nametbl_lookup(net, type, inst, scope,\n\t\t\t\t &dsts, &dstcnt, exclude, true))\n'''
-          if old not in chunk:
-              raise SystemExit('232: group mcast lookup block not found')
-          chunk = chunk.replace(old, new, 1)
-          s = s[:start] + chunk + s[end:]
-
-          # socket.c multicast receive: group traffic requires exact scope;
-          # ordinary multicast retains non-exact lookup behavior.
-          start = s.index('void tipc_sk_mcast_rcv(')
-          end = s.index('/**\n * tipc_sk_conn_proto_rcv', start)
-          fn = '''void tipc_sk_mcast_rcv(struct net *net, struct sk_buff_head *arrvq,\n\t\t       struct sk_buff_head *inputq)\n{\n\tu32 self = tipc_own_addr(net);\n\tu32 type, lower, upper, scope;\n\tstruct sk_buff *skb, *_skb;\n\tu32 portid, oport, onode;\n\tstruct sk_buff_head tmpq;\n\tstruct list_head dports;\n\tstruct tipc_msg *hdr;\n\tint user, mtyp, hlen;\n\tbool exact;\n\n\t__skb_queue_head_init(&tmpq);\n\tINIT_LIST_HEAD(&dports);\n\n\tskb = tipc_skb_peek(arrvq, &inputq->lock);\n\tfor (; skb; skb = tipc_skb_peek(arrvq, &inputq->lock)) {\n\t\thdr = buf_msg(skb);\n\t\tuser = msg_user(hdr);\n\t\tmtyp = msg_type(hdr);\n\t\thlen = skb_headroom(skb) + msg_hdr_sz(hdr);\n\t\toport = msg_origport(hdr);\n\t\tonode = msg_orignode(hdr);\n\t\ttype = msg_nametype(hdr);\n\n\t\tif (mtyp == TIPC_GRP_UCAST_MSG || user == GROUP_PROTOCOL) {\n\t\t\tspin_lock_bh(&inputq->lock);\n\t\t\tif (skb_peek(arrvq) == skb) {\n\t\t\t\t__skb_dequeue(arrvq);\n\t\t\t\t__skb_queue_tail(inputq, skb);\n\t\t\t}\n\t\t\tkfree_skb(skb);\n\t\t\tspin_unlock_bh(&inputq->lock);\n\t\t\tcontinue;\n\t\t}\n\n\t\t/* Group messages require exact scope match */\n\t\tif (msg_in_group(hdr)) {\n\t\t\tlower = 0;\n\t\t\tupper = ~0;\n\t\t\tscope = msg_lookup_scope(hdr);\n\t\t\texact = true;\n\t\t} else {\n\t\t\t/* TIPC_NODE_SCOPE means "any scope" in this context */\n\t\t\tif (onode == self)\n\t\t\t\tscope = TIPC_NODE_SCOPE;\n\t\t\telse\n\t\t\t\tscope = TIPC_CLUSTER_SCOPE;\n\t\t\texact = false;\n\t\t\tlower = msg_namelower(hdr);\n\t\t\tupper = msg_nameupper(hdr);\n\t\t}\n\n\t\t/* Create destination port list: */\n\t\ttipc_nametbl_mc_lookup(net, type, lower, upper,\n\t\t\t\t       scope, exact, &dports);\n\n\t\t/* Clone message per destination */\n\t\twhile (tipc_dest_pop(&dports, NULL, &portid)) {\n\t\t\t_skb = __pskb_copy(skb, hlen, GFP_ATOMIC);\n\t\t\tif (_skb) {\n\t\t\t\tmsg_set_destport(buf_msg(_skb), portid);\n\t\t\t\t__skb_queue_tail(&tmpq, _skb);\n\t\t\t\tcontinue;\n\t\t\t}\n\t\t\tpr_warn("Failed to clone mcast rcv buffer\\n");\n\t\t}\n\t\t/* Append to inputq if not already done by other thread */\n\t\tspin_lock_bh(&inputq->lock);\n\t\tif (skb_peek(arrvq) == skb) {\n\t\t\tskb_queue_splice_tail_init(&tmpq, inputq);\n\t\t\tkfree_skb(__skb_dequeue(arrvq));\n\t\t}\n\t\tspin_unlock_bh(&inputq->lock);\n\t\t__skb_queue_purge(&tmpq);\n\t\tkfree_skb(skb);\n\t}\n\ttipc_sk_rcv(net, inputq);\n}\n\n'''
-          p.write_text(s[:start] + fn + s[end:])
-          PY
-
-          rm -f net/tipc/group.c.rej net/tipc/name_table.c.rej
-          git add -A
-          git diff --cached --check
-          git commit --author="Jon Maloy <jon.maloy@ericsson.com>" -m "tipc: improve groupcast scope handling" -m "Backported from upstream 232d07b74a33b9f5d48516dc1d8ce41723ada593. Sweet's newer dynamic tsk->group checks are intentionally retained across blocking waits."
-
-          # febafc: after d12 immediate JOIN, a failed publish must return before
-          # tipc_group_join() can access the deleted group. Preserve Sweet's
-          # newer group_is_open reset on this error path.
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('net/tipc/socket.c')
-          s = p.read_text()
-          old = '''\tif (rc) {\n\t\ttipc_group_delete(net, grp);\n\t\ttsk->group = NULL;\n\t\tWRITE_ONCE(tsk->group_is_open, true);\n\t}\n\t/* Eliminate any risk that a broadcast overtakes sent JOINs */\n'''
-          new = '''\tif (rc) {\n\t\ttipc_group_delete(net, grp);\n\t\ttsk->group = NULL;\n\t\tWRITE_ONCE(tsk->group_is_open, true);\n\t\treturn rc;\n\t}\n\t/* Eliminate any risk that a broadcast overtakes sent JOINs */\n'''
-          if old not in s:
-              raise SystemExit('febafc: target block not found exactly')
-          p.write_text(s.replace(old, new, 1))
-          PY
-          git add net/tipc/socket.c
-          git commit --author="Jon Maloy <jon.maloy@ericsson.com>" -m "tipc: fix potential access after delete in tipc_sk_join()" -m "Equivalent of upstream febafc8455fdbb0ba53d596075068a683b75f355, adapted to preserve Sweet's group_is_open reset."
-
-          # e9a03445: fix the non-group multicast regression introduced by
-          # exact group scope handling in 232d07.
-          c=e9a034456a8cd766795610aa5065263147e35228
-          curl -fsSL "https://github.com/torvalds/linux/commit/${c}.diff" -o "/tmp/${c}.diff"
-          git apply --check "/tmp/${c}.diff"
-          git apply "/tmp/${c}.diff"
-          git add -A
-          git commit --author="Jon Maloy <jon.maloy@ericsson.com>" -m "tipc: fix bug during lookup of multicast destination nodes" -m "Backported from upstream e9a034456a8cd766795610aa5065263147e35228."
-
-          # Structural verification before write-back.
-          git diff --check HEAD~7..HEAD
-          ! grep -q "MBR_DISCOVERED" net/tipc/group.c
-          ! grep -q "MBR_QUARANTINED" net/tipc/group.c
-          ! grep -q "event_msg" net/tipc/group.c
-          grep -q "void tipc_group_join" net/tipc/group.c
-          grep -q "tipc_group_join(net, grp" net/tipc/socket.c
-          grep -q "TIPC_SUB_NO_STATUS" net/tipc/server.h
-          grep -q "TIPC_SUB_CLUSTER_SCOPE" net/tipc/server.h
-          grep -q "TIPC_SUB_NODE_SCOPE" net/tipc/server.h
-          grep -q "bool \*group_is_open" net/tipc/group.h
-          grep -q "u64.*usr_handle" net/tipc/server.c
-          grep -q "if (grp->scope == TIPC_NODE_SCOPE" net/tipc/group.c
-          grep -q "tsk->group &&" net/tipc/socket.c
-          ! grep -q "refcount_dec(&skb->users)" net/tipc/socket.c
-
-          git push origin HEAD:TIPC_GROUPS_SPRING_FSM_20260915
+          bash -euxo pipefail /tmp/tipc-phase2.sh
