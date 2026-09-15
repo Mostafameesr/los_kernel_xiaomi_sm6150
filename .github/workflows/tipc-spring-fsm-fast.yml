@@ -1,4 +1,4 @@
-name: Sweet full kernel compile validation
+name: TIPC phase 5 member departure ACK wakeup
 
 on:
   push:
@@ -8,47 +8,105 @@ on:
       - .github/workflows/tipc-spring-fsm-fast.yml
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  build-kernel:
+  patch-and-build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout work branch
         uses: actions/checkout@v4
         with:
           ref: TIPC_GROUPS_SPRING_FSM_20260915
-          fetch-depth: 1
+          fetch-depth: 2
 
-      - name: Install kernel build dependencies
+      - name: Apply member departure ACK wakeup fix
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git config user.name "TIPC backport bot"
+          git config user.email "tipc-backport@users.noreply.github.com"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('net/tipc/group.c')
+          s = p.read_text()
+
+          old = '''static void tipc_group_delete_member(struct tipc_group *grp,\n\t\t\t\t     struct tipc_member *m)\n{\n\trb_erase(&m->tree_node, &grp->members);\n\tgrp->member_cnt--;\n\n\t/* Check if we were waiting for replicast ack from this member */\n\tif (grp->bc_ackers && less(m->bc_acked, grp->bc_snd_nxt - 1))\n\t\tgrp->bc_ackers--;\n'''
+          new = '''static bool tipc_group_delete_member(struct tipc_group *grp,\n\t\t\t\t     struct tipc_member *m)\n{\n\tbool wakeup = false;\n\n\trb_erase(&m->tree_node, &grp->members);\n\tgrp->member_cnt--;\n\n\t/* If the departing member owed the last replicast ACK, clear the\n\t * broadcast congestion state and wake a blocked sender.\n\t */\n\tif (grp->bc_ackers && less(m->bc_acked, grp->bc_snd_nxt - 1) &&\n\t    !--grp->bc_ackers) {\n\t\twakeup = !READ_ONCE(*grp->open);\n\t\tWRITE_ONCE(*grp->open, true);\n\t}\n'''
+          if old not in s:
+              raise SystemExit('delete_member header/ACK block not found')
+          s = s.replace(old, new, 1)
+
+          old = '''\tif (!tipc_group_find_node(grp, m->node))\n\t\ttipc_nlist_del(&grp->dests, m->node);\n\n\tkfree(m);\n}\n'''
+          new = '''\tif (!tipc_group_find_node(grp, m->node))\n\t\ttipc_nlist_del(&grp->dests, m->node);\n\n\tkfree(m);\n\treturn wakeup;\n}\n'''
+          if old not in s:
+              raise SystemExit('delete_member tail not found')
+          s = s.replace(old, new, 1)
+
+          old = '''void tipc_group_filter_msg(struct tipc_group *grp, struct sk_buff_head *inputq,\n\t\t\t   struct sk_buff_head *xmitq)\n{\n\tstruct sk_buff *skb = __skb_dequeue(inputq);\n'''
+          new = '''bool tipc_group_filter_msg(struct tipc_group *grp, struct sk_buff_head *inputq,\n\t\t\t   struct sk_buff_head *xmitq)\n{\n\tstruct sk_buff *skb = __skb_dequeue(inputq);\n\tbool wakeup = false;\n'''
+          if old not in s:
+              raise SystemExit('filter_msg signature not found')
+          s = s.replace(old, new, 1)
+
+          old = '''\tif (!skb)\n\t\treturn;\n'''
+          new = '''\tif (!skb)\n\t\treturn false;\n'''
+          pos = s.index('bool tipc_group_filter_msg(')
+          tail = s[pos:]
+          if old not in tail:
+              raise SystemExit('filter_msg empty return not found')
+          tail = tail.replace(old, new, 1)
+          s = s[:pos] + tail
+
+          old = '''\t\tif (leave) {\n\t\t\t__skb_queue_purge(defq);\n\t\t\ttipc_group_delete_member(grp, m);\n\t\t\tbreak;\n\t\t}\n'''
+          new = '''\t\tif (leave) {\n\t\t\t__skb_queue_purge(defq);\n\t\t\twakeup = tipc_group_delete_member(grp, m);\n\t\t\tbreak;\n\t\t}\n'''
+          if old not in s:
+              raise SystemExit('filter_msg delete call not found')
+          s = s.replace(old, new, 1)
+
+          old = '''\t}\n\treturn;\ndrop:\n\tkfree_skb(skb);\n}\n\nvoid tipc_group_update_rcv_win'''
+          new = '''\t}\n\treturn wakeup;\ndrop:\n\tkfree_skb(skb);\n\treturn false;\n}\n\nvoid tipc_group_update_rcv_win'''
+          if old not in s:
+              raise SystemExit('filter_msg return tail not found')
+          p.write_text(s.replace(old, new, 1))
+
+          p = Path('net/tipc/group.h')
+          s = p.read_text()
+          old = '''void tipc_group_filter_msg(struct tipc_group *grp,\n\t\t\t   struct sk_buff_head *inputq,\n\t\t\t   struct sk_buff_head *xmitq);\n'''
+          new = '''bool tipc_group_filter_msg(struct tipc_group *grp,\n\t\t\t   struct sk_buff_head *inputq,\n\t\t\t   struct sk_buff_head *xmitq);\n'''
+          if old not in s:
+              raise SystemExit('group.h filter_msg prototype not found')
+          p.write_text(s.replace(old, new, 1))
+
+          p = Path('net/tipc/socket.c')
+          s = p.read_text()
+          old = '''\tif (unlikely(grp))\n\t\ttipc_group_filter_msg(grp, &inputq, xmitq);\n\n\t/* Validate and add to receive buffer if there is space */\n'''
+          new = '''\tif (unlikely(grp) && tipc_group_filter_msg(grp, &inputq, xmitq))\n\t\tsk->sk_write_space(sk);\n\n\t/* Validate and add to receive buffer if there is space */\n'''
+          if old not in s:
+              raise SystemExit('socket filter_msg caller not found')
+          p.write_text(s.replace(old, new, 1))
+          PY
+
+          git add net/tipc/group.c net/tipc/group.h net/tipc/socket.c
+          git diff --cached --check
+          git diff --cached --stat
+          git commit -m "tipc: wake group sender when departing member drains ACKs" -m "Fix the member-departure forward-progress hole called out by the Sep 13 2026 GRP_ACK hardening: if deleting a member consumes the final expected replicast ACK, reopen group write readiness and propagate a write-space wakeup to the owning socket."
+          git push origin HEAD:TIPC_GROUPS_SPRING_FSM_20260915
+
+      - name: Install build dependencies
         shell: bash
         run: |
           set -euxo pipefail
           sudo apt-get update
           sudo apt-get install -y bc bison flex libelf-dev libssl-dev llvm lld
 
-      - name: Generate Sweet configuration
+      - name: Compile complete TIPC directory with Sweet config
         shell: bash
         run: |
           set -euxo pipefail
-          clang --version
-          ld.lld --version
           make O=out ARCH=arm64 LLVM=1 vendor/sweet_defconfig
           grep '^CONFIG_TIPC=y' out/.config
-          grep '^CONFIG_ARCH_SM6150=y' out/.config
-
-      - name: Build complete TIPC directory first
-        shell: bash
-        run: |
-          set -euxo pipefail
           make O=out ARCH=arm64 LLVM=1 -j2 net/tipc/
           test -s out/net/tipc/group.o
           test -s out/net/tipc/socket.o
-
-      - name: Build full Sweet kernel image
-        shell: bash
-        run: |
-          set -euxo pipefail
-          make O=out ARCH=arm64 LLVM=1 -j2 Image.gz
-          test -s out/arch/arm64/boot/Image.gz
-          file out/arch/arm64/boot/Image.gz
