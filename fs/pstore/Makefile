@@ -10,5 +10,5 @@ pstore-$(CONFIG_PSTORE_FTRACE)	+= ftrace.o
 
 pstore-$(CONFIG_PSTORE_PMSG)	+= pmsg.o
 
-ramoops-objs += ram.o ram_core.o ramoops_qcom_reserve.o
+ramoops-objs += ram.o ram_core.o
 obj-$(CONFIG_PSTORE_RAM)	+= ramoops.o
