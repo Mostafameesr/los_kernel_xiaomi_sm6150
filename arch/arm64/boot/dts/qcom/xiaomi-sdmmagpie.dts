@@ -33,12 +33,12 @@
 
 /*
  * Keep exactly one ramoops backend on Xiaomi SDMMAGPIE devices.
- * Sweet's Xiaomi kernel reserved 4 MiB at 0xb0000000 for persistent
- * ramoops storage.  Use that established reservation through DT and
- * remove the later duplicate 0x9d800000 backend.
+ * The original platform tree already reserves 4 MiB at 0x9d800000
+ * explicitly for pstore.  The 0xb0000000 ramoops node was added later;
+ * remove that duplicate and use the original platform reservation.
  */
 &reserved_memory {
-	/delete-node/ ramoops@9d800000;
+	/delete-node/ ramoops@b0000000;
 };
 
 /*
@@ -46,10 +46,10 @@
  *   1536 KiB dmesg (3 x 512 KiB records)
  *   2048 KiB console (continuously written)
  *    512 KiB pmsg
- * max-reason 4 records panic, oops, emergency restart and restart.
+ * max-reason 4 includes panic, oops, emergency and restart dumps.
  * ECC is kept enabled for all persistent RAM zones.
  */
-&ramoops {
+&ramoops_mem {
 	record-size = <0x00080000>;
 	console-size = <0x00200000>;
 	pmsg-size = <0x00080000>;
