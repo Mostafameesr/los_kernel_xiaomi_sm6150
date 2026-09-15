@@ -22,9 +22,11 @@ jobs:
           set -euxo pipefail
           git init .
           git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git config remote.origin.promisor true
+          git config remote.origin.partialclonefilter blob:none
           git sparse-checkout init --cone
           git sparse-checkout set .github/workflows
-          git fetch --no-tags --depth=1 origin TIPC_GROUPS_SPRING_FSM_20260915
+          git fetch --no-tags --depth=1 --filter=blob:none origin TIPC_GROUPS_SPRING_FSM_20260915
           git checkout -B TIPC_GROUPS_SPRING_FSM_20260915 FETCH_HEAD
           git config user.name "TIPC backport bot"
           git config user.email "tipc-backport@users.noreply.github.com"
@@ -33,5 +35,3 @@ jobs:
           git add .github/workflows/tipc-spring-fsm-fast.yml
           git commit -m "ci: fix shallow phase2 verification range"
           git push origin HEAD:TIPC_GROUPS_SPRING_FSM_20260915
-
-# one-shot trigger
