@@ -37,15 +37,12 @@ jobs:
           git config user.name "TIPC backport bot"
           git config user.email "tipc-backport@users.noreply.github.com"
 
-          # d12d benefits from git's 3-way merge against the old TIPC baseline.
-          # Use upstream as promisor only for this one commit, then return to
-          # direct upstream diffs for the rest.
+          # d12d: use 3-way merge, retaining Sweet's newer group_is_open ABI.
           git remote add linux-upstream https://github.com/torvalds/linux.git
           git config remote.origin.promisor false
           git config remote.linux-upstream.promisor true
           git config remote.linux-upstream.partialclonefilter blob:none
           git config extensions.partialClone linux-upstream
-
           c=d12d2e12cec2d66eab6cd58f592dad9fd386b97d
           git fetch --no-tags --depth=2 --filter=blob:none linux-upstream "$c"
           if ! git cherry-pick FETCH_HEAD; then
@@ -57,10 +54,47 @@ jobs:
             git add net/tipc/group.h
             git cherry-pick --continue
           fi
-
           git config --unset extensions.partialClone || true
           git config --unset remote.linux-upstream.promisor || true
           git config --unset remote.linux-upstream.partialclonefilter || true
+
+          # 8348500: apply untouched files verbatim, adapt only group.c/server.c
+          # where Sweet already carries newer unrelated hardening.
+          c=8348500f80d5660af29c475e1f15d412d83564c9
+          curl -fsSL "https://github.com/torvalds/linux/commit/${c}.diff" -o "/tmp/${c}.diff"
+          git apply --check --exclude=net/tipc/group.c --exclude=net/tipc/server.c "/tmp/${c}.diff"
+          git apply --exclude=net/tipc/group.c --exclude=net/tipc/server.c "/tmp/${c}.diff"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('net/tipc/group.c')
+          s = p.read_text()
+          old = '''struct tipc_group *tipc_group_create(struct net *net, u32 portid,\n\t\t\t\t     struct tipc_group_req *mreq,\n\t\t\t\t     bool *group_is_open)\n{\n\tstruct tipc_group *grp;\n\tu32 type = mreq->type;\n'''
+          new = '''struct tipc_group *tipc_group_create(struct net *net, u32 portid,\n\t\t\t\t     struct tipc_group_req *mreq,\n\t\t\t\t     bool *group_is_open)\n{\n\tu32 filter = TIPC_SUB_PORTS | TIPC_SUB_NO_STATUS;\n\tstruct tipc_group *grp;\n\tu32 type = mreq->type;\n'''
+          if old not in s:
+              raise SystemExit('834 group create header target not found')
+          s = s.replace(old, new, 1)
+          old = '''\tif (tipc_topsrv_kern_subscr(net, portid, type, 0, ~0, &grp->subid)) {\n\t\tWRITE_ONCE(*grp->open, false);\n\t\treturn grp;\n\t}\n'''
+          new = '''\tif (tipc_topsrv_kern_subscr(net, portid, type, filter,\n\t\t\t\t    0, ~0, &grp->subid)) {\n\t\tWRITE_ONCE(*grp->open, false);\n\t\treturn grp;\n\t}\n'''
+          if old not in s:
+              raise SystemExit('834 group subscription target not found')
+          p.write_text(s.replace(old, new, 1))
+
+          p = Path('net/tipc/server.c')
+          s = p.read_text()
+          old = '''bool tipc_topsrv_kern_subscr(struct net *net, u32 port, u32 type,\n\t\t\t     u32 lower, u32 upper, int *conid)\n'''
+          new = '''bool tipc_topsrv_kern_subscr(struct net *net, u32 port, u32 type,\n\t\t\t     u32 filter, u32 lower, u32 upper, int *conid)\n'''
+          if old not in s:
+              raise SystemExit('834 server signature target not found')
+          s = s.replace(old, new, 1)
+          old = '\tsub.filter = TIPC_SUB_PORTS;\n'
+          if old not in s:
+              raise SystemExit('834 server filter target not found')
+          s = s.replace(old, '\tsub.filter = filter;\n', 1)
+          p.write_text(s)
+          PY
+          git add -A
+          git commit --author="Jon Maloy <jon.maloy@ericsson.com>" -m "tipc: add option to suppress PUBLISH events for pre-existing publications" -m "Backported from upstream 8348500f80d5660af29c475e1f15d412d83564c9; preserves Sweet's bool *group_is_open and u64 topology usr_handle handling."
 
           apply_upstream_diff() {
             c="$1"
@@ -76,11 +110,10 @@ jobs:
             git commit --author="Jon Maloy <jon.maloy@ericsson.com>" -m "$title" -m "Backported from upstream commit $c while preserving Sweet-specific newer hardening."
           }
 
-          apply_upstream_diff 8348500f80d5660af29c475e1f15d412d83564c9 "tipc: add option to suppress PUBLISH events for pre-existing publications"
           apply_upstream_diff 232d07b74a33b9f5d48516dc1d8ce41723ada593 "tipc: improve groupcast scope handling"
 
-          # Follow-up safety fix for immediate JOIN, adapted to Sweet's newer
-          # group_is_open state reset.
+          # febafc: keep Sweet group_is_open reset, but return immediately on
+          # publish failure before dereferencing the deleted group in JOIN.
           python3 - <<'PY'
           from pathlib import Path
           p = Path('net/tipc/socket.c')
@@ -103,5 +136,6 @@ jobs:
           grep -q "TIPC_SUB_NO_STATUS" net/tipc/server.h
           grep -q "TIPC_SUB_NO_STATUS" net/tipc/group.c
           grep -q "bool \*group_is_open" net/tipc/group.h
+          grep -q "u64.*usr_handle" net/tipc/server.c
 
           git push origin HEAD:TIPC_GROUPS_SPRING_FSM_20260915
