@@ -160,6 +160,7 @@ struct tipc_group *tipc_group_create(struct net *net, u32 portid,
 				     struct tipc_group_req *mreq,
 				     bool *group_is_open)
 {
+	u32 filter = TIPC_SUB_PORTS | TIPC_SUB_NO_STATUS;
 	struct tipc_group *grp;
 	u32 type = mreq->type;
 
@@ -180,7 +181,8 @@ struct tipc_group *tipc_group_create(struct net *net, u32 portid,
 	grp->loopback = mreq->flags & TIPC_GROUP_LOOPBACK;
 	grp->events = mreq->flags & TIPC_GROUP_MEMBER_EVTS;
 	grp->open = group_is_open;
-	if (tipc_topsrv_kern_subscr(net, portid, type, 0, ~0, &grp->subid)) {
+	if (tipc_topsrv_kern_subscr(net, portid, type, filter,
+				    0, ~0, &grp->subid)) {
 		WRITE_ONCE(*grp->open, false);
 		return grp;
 	}
