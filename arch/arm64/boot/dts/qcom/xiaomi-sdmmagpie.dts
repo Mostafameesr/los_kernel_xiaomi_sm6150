@@ -31,6 +31,11 @@
 	qcom,board-id = <0 0>;
 };
 
+/* Keep the known-good B0000000 ramoops node and remove the older 9d8 layout. */
+&reserved_memory {
+	/delete-node/ ramoops@9d800000;
+};
+
 &pm6150l_lcdb {
 	/delete-property/ qcom,voltage-step-ramp;
 };
