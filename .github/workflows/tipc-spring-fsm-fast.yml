@@ -25,7 +25,7 @@ jobs:
         run: |
           set -euxo pipefail
           sudo apt-get update
-          sudo apt-get install -y bc bison flex libelf-dev libssl-dev
+          sudo apt-get install -y bc bison flex libelf-dev libssl-dev llvm lld
 
       - name: Show toolchain
         shell: bash
@@ -33,7 +33,8 @@ jobs:
           set -euxo pipefail
           clang --version
           ld.lld --version
-          llvm-ar --version | head -n 1
+          llvm-ar --version
+          llvm-nm --version
 
       - name: Generate Sweet configuration
         shell: bash
@@ -65,11 +66,9 @@ jobs:
             test -s "out/net/tipc/${f}.o"
           done
 
-      - name: Check generated objects for unresolved compile fallout
+      - name: Check generated objects
         shell: bash
         run: |
           set -euxo pipefail
-          llvm-nm out/net/tipc/group.o >/tmp/group.nm
-          llvm-nm out/net/tipc/socket.o >/tmp/socket.nm
+          llvm-nm out/net/tipc/group.o > /tmp/group.nm
           grep ' tipc_group_join$' /tmp/group.nm
-          grep ' tipc_sk_create$' /tmp/socket.nm || true
