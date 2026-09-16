@@ -4,8 +4,8 @@
  * it under the terms of the GNU General Public License version 2 and
  * only version 2 as published by the Free Software Foundation.
  *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * General Public License for more details.
  */
@@ -31,16 +31,19 @@
 	qcom,board-id = <0 0>;
 };
 
-/* Use one fixed Sweet ramoops region and layout across boots. */
+/*
+ * 0x9d800000 does not retain valid ramoops headers across a normal
+ * Sweet reboot. Use the historical 0xb0000000 reserved region instead.
+ * Keep the first retention test free of ECC so header/data retention is
+ * tested directly without ECC being another variable.
+ */
 &reserved_memory {
-	/delete-node/ ramoops@b0000000;
+	/delete-node/ ramoops@9d800000;
 };
 
-&ramoops_mem {
+&ramoops {
 	record-size = <0x00200000>;
 	console-size = <0x00200000>;
-	/delete-property/ pmsg-size;
-	ecc-size = <16>;
 	max-reason = <4>;
 };
 
