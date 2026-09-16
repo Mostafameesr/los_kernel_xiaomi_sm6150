@@ -4,8 +4,8 @@
  * it under the terms of the GNU General Public License version 2 and
  * only version 2 as published by the Free Software Foundation.
  *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * General Public License for more details.
  */
@@ -31,9 +31,10 @@
 	qcom,board-id = <0 0>;
 };
 
-/* Keep the known-good B0000000 ramoops node and remove the older 9d8 layout. */
+/* LineageOS Sweet reserves and registers ramoops from fs/pstore/ram.c. */
 &reserved_memory {
 	/delete-node/ ramoops@9d800000;
+	/delete-node/ ramoops@b0000000;
 };
 
 &pm6150l_lcdb {
