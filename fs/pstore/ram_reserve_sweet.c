@@ -10,6 +10,7 @@
 #include <linux/mm.h>
 #include <linux/platform_device.h>
 #include <linux/pstore_ram.h>
+#include <linux/string.h>
 
 #ifdef CONFIG_MACH_XIAOMI_SWEET
 
@@ -32,6 +33,10 @@ static int __init sweet_ramoops_memreserve(char *p)
 
 	if (!p)
 		return 1;
+
+	/* Be safe if the bootloader and CONFIG_CMDLINE both provide it. */
+	if (sweet_ramoops_data.mem_size)
+		return 0;
 
 	size = memparse(p, &p) & PAGE_MASK;
 	if (!size)
