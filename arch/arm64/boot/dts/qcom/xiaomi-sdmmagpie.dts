@@ -32,19 +32,13 @@
 };
 
 /*
- * 0x9d800000 does not retain valid ramoops headers across a normal
- * Sweet reboot. Use the historical 0xb0000000 reserved region instead.
- * Keep the first retention test free of ECC so header/data retention is
- * tested directly without ECC being another variable.
+ * Ramoops is registered by the Sweet early-reservation platform path.
+ * Remove both historical DT backends so only one owner can touch the
+ * persistent 0xb0000000 region.
  */
 &reserved_memory {
 	/delete-node/ ramoops@9d800000;
-};
-
-&ramoops {
-	record-size = <0x00200000>;
-	console-size = <0x00200000>;
-	max-reason = <4>;
+	/delete-node/ ramoops@b0000000;
 };
 
 &pm6150l_lcdb {
