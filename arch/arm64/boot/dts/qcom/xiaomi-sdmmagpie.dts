@@ -31,9 +31,17 @@
 	qcom,board-id = <0 0>;
 };
 
-/* Keep the known-good B0000000 ramoops node and remove the older 9d8 layout. */
+/* Use one fixed Sweet ramoops region and layout across boots. */
 &reserved_memory {
-	/delete-node/ ramoops@9d800000;
+	/delete-node/ ramoops@b0000000;
+};
+
+&ramoops_mem {
+	record-size = <0x00200000>;
+	console-size = <0x00200000>;
+	/delete-property/ pmsg-size;
+	ecc-size = <16>;
+	max-reason = <4>;
 };
 
 &pm6150l_lcdb {
