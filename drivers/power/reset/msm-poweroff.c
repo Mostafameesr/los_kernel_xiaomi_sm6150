@@ -315,7 +315,7 @@ static void msm_restart_prepare(const char *cmd)
 		pr_info("Forcing a warm reset of the system\n");
 
 	/* Hard reset the PMIC unless memory contents must be maintained. */
-	if (force_warm_reboot || need_warm_reset)
+	if (in_panic || force_warm_reboot || need_warm_reset)
 		qpnp_pon_system_pwr_off(PON_POWER_OFF_WARM_RESET);
 	else
 		qpnp_pon_system_pwr_off(PON_POWER_OFF_HARD_RESET);
@@ -618,7 +618,7 @@ static int msm_restart_probe(struct platform_device *pdev)
 	} else {
 		emergency_dload_mode_addr = of_iomap(np, 0);
 		if (!emergency_dload_mode_addr)
-			pr_err("unable to map imem EDLOAD mode offset\n");
+			pr_err("unable to map imem EDLOAD offset\n");
 	}
 
 #ifdef CONFIG_RANDOMIZE_BASE
