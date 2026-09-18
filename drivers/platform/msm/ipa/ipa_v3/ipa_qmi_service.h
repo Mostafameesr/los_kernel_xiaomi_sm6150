@@ -128,6 +128,8 @@ struct ipa3_rmnet_mux_val {
 	bool ul_flt_reg;
 	bool mux_hdr_set;
 	uint32_t  hdr_hdl;
+	uint16_t mtu_v4;
+	uint16_t mtu_v6;
 };
 
 extern struct qmi_elem_info
