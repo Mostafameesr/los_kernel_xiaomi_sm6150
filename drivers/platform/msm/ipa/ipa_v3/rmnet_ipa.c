@@ -2086,6 +2086,13 @@ static int ipa3_wwan_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 		case RMNET_IOCTL_SET_INGRESS_DATA_FORMAT:/*  Set IDF  */
 			rc = handle3_ingress_format(dev, &ext_ioctl_data);
 			break;
+		/* Spring NICM uses this legacy V1 command to vote IPA awake/asleep. */
+		case RMNET_IOCTL_SET_SLEEP_STATE:
+			if (ext_ioctl_data.u.data)
+				rc = ipa3_app_clk_vote(IPA_APP_CLK_DEVOTE);
+			else
+				rc = ipa3_app_clk_vote(IPA_APP_CLK_VOTE);
+			break;
 		case RMNET_IOCTL_SET_XLAT_DEV_INFO:
 			wan_msg = kzalloc(sizeof(struct ipa_wan_msg),
 						GFP_KERNEL);
