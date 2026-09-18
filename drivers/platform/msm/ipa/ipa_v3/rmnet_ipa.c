@@ -139,6 +139,11 @@ struct ipa3_wwan_private {
 	struct napi_struct napi;
 };
 
+struct ipa3_netmgr_clock_vote {
+	struct mutex mutex;
+	atomic_t cnt;
+};
+
 /*
  * Spring NICM uses RMNET_IOCTL_EXTENDED (0x89FD), subcommand 0x20,
  * with a 20-byte payload: interface[16] + MTU v4 + MTU v6.
@@ -186,6 +191,7 @@ struct rmnet_ipa3_context {
 	bool ipa_config_is_apq;
 	bool ipa_mhi_aggr_formet_set;
 	bool no_qmap_config;
+	struct ipa3_netmgr_clock_vote clock_vote;
 };
 
 static struct rmnet_ipa3_context *rmnet_ipa3_ctx;
@@ -2086,12 +2092,26 @@ static int ipa3_wwan_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 		case RMNET_IOCTL_SET_INGRESS_DATA_FORMAT:/*  Set IDF  */
 			rc = handle3_ingress_format(dev, &ext_ioctl_data);
 			break;
-		/* Spring NICM uses this legacy V1 command to vote IPA awake/asleep. */
+		/* Spring NICM legacy V1 IPA clock vote. */
 		case RMNET_IOCTL_SET_SLEEP_STATE:
-			if (ext_ioctl_data.u.data)
-				rc = ipa3_app_clk_vote(IPA_APP_CLK_DEVOTE);
-			else
-				rc = ipa3_app_clk_vote(IPA_APP_CLK_VOTE);
+			mutex_lock(&rmnet_ipa3_ctx->clock_vote.mutex);
+			if (ext_ioctl_data.u.data) {
+				/* Request to enable low-power mode. */
+				IPAWANDBG("ioctl: unvote IPA clock\n");
+				if (atomic_read(&rmnet_ipa3_ctx->clock_vote.cnt)) {
+					atomic_dec(&rmnet_ipa3_ctx->clock_vote.cnt);
+					IPA_ACTIVE_CLIENTS_DEC_SPECIAL("NETMGR");
+				}
+			} else {
+				/* Request to keep IPA awake. */
+				IPAWANDBG("ioctl: vote IPA clock\n");
+				if ((atomic_read(&rmnet_ipa3_ctx->clock_vote.cnt) + 1)
+						<= IPA_APP_VOTE_MAX) {
+					IPA_ACTIVE_CLIENTS_INC_SPECIAL("NETMGR");
+					atomic_inc(&rmnet_ipa3_ctx->clock_vote.cnt);
+				}
+			}
+			mutex_unlock(&rmnet_ipa3_ctx->clock_vote.mutex);
 			break;
 		case RMNET_IOCTL_SET_XLAT_DEV_INFO:
 			wan_msg = kzalloc(sizeof(struct ipa_wan_msg),
@@ -3215,6 +3235,12 @@ static int ipa3_lcl_mdm_ssr_notifier_cb(struct notifier_block *this,
 
 		if (ipa3_ctx->ipa_endp_delay_wa)
 			ipa3_client_prod_post_shutdown_cleanup();
+
+		while (atomic_read(&rmnet_ipa3_ctx->clock_vote.cnt) > 0) {
+			IPAWANDBG("ioctl: unvoting pending IPA clock\n");
+			atomic_dec(&rmnet_ipa3_ctx->clock_vote.cnt);
+			IPA_ACTIVE_CLIENTS_DEC_SPECIAL("NETMGR");
+		}
 
 		IPAWANINFO("IPA AFTER_SHUTDOWN handling is complete\n");
 		break;
@@ -4986,10 +5012,12 @@ static int __init ipa3_wwan_init(void)
 
 	atomic_set(&rmnet_ipa3_ctx->is_initialized, 0);
 	atomic_set(&rmnet_ipa3_ctx->is_ssr, 0);
+	atomic_set(&rmnet_ipa3_ctx->clock_vote.cnt, 0);
 
 	mutex_init(&rmnet_ipa3_ctx->pipe_handle_guard);
 	mutex_init(&rmnet_ipa3_ctx->add_mux_channel_lock);
 	mutex_init(&rmnet_ipa3_ctx->per_client_stats_guard);
+	mutex_init(&rmnet_ipa3_ctx->clock_vote.mutex);
 	/* Reset the Lan Stats. */
 	for (i = 0; i < IPACM_MAX_CLIENT_DEVICE_TYPES; i++) {
 		teth_ptr = &rmnet_ipa3_ctx->tether_device[i];
