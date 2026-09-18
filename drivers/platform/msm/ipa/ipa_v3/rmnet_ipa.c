@@ -163,8 +163,6 @@ struct rmnet_ipa3_context {
 	u32 dflt_v4_wan_rt_hdl;
 	u32 dflt_v6_wan_rt_hdl;
 	struct ipa3_rmnet_mux_val mux_channel[MAX_NUM_OF_MUX_CHANNEL];
-	u16 nicm_mtu_v4[MAX_NUM_OF_MUX_CHANNEL];
-	u16 nicm_mtu_v6[MAX_NUM_OF_MUX_CHANNEL];
 	int num_q6_rules;
 	int old_num_q6_rules;
 	int rmnet_index;
@@ -2191,23 +2189,24 @@ static int ipa3_wwan_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 				break;
 			}
 
+			mux_channel = rmnet_ipa3_ctx->mux_channel;
 			/* Match Spring partial-update semantics: zero means keep old. */
 			if (mtu.mtu_v4)
-				rmnet_ipa3_ctx->nicm_mtu_v4[index] = mtu.mtu_v4;
+				mux_channel[index].mtu_v4 = mtu.mtu_v4;
 			if (mtu.mtu_v6)
-				rmnet_ipa3_ctx->nicm_mtu_v6[index] = mtu.mtu_v6;
+				mux_channel[index].mtu_v6 = mtu.mtu_v6;
 
 			IPAWANINFO(
 				"Spring NICM MTU compat: if=%s v4=%u v6=%u\n",
 				if_name,
-				(unsigned int)rmnet_ipa3_ctx->nicm_mtu_v4[index],
-				(unsigned int)rmnet_ipa3_ctx->nicm_mtu_v6[index]);
+				(unsigned int)mux_channel[index].mtu_v4,
+				(unsigned int)mux_channel[index].mtu_v6);
 
 			/*
-			 * Do not emit Spring's IPA_SET_MTU userspace event here.
-			 * The running userspace is Sweet IPACM, whose event namespace
-			 * predates that Spring event. Returning success is the ABI
-			 * translation needed by Spring NICM on the Sweet IPA stack.
+			 * Keep Sweet's userspace event ABI unchanged. Spring stores
+			 * MTU state in the mux entry before emitting IPA_SET_MTU; the
+			 * mux state is safe to mirror here, while Sweet IPACM predates
+			 * the newer IPA_SET_MTU event.
 			 */
 			rc = 0;
 			break;
