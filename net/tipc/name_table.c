@@ -808,13 +808,14 @@ int tipc_nametbl_withdraw(struct net *net, u32 type, u32 lower, u32 ref,
 /**
  * tipc_nametbl_subscribe - add a subscription object to the name table
  */
-void tipc_nametbl_subscribe(struct tipc_subscription *s, bool status)
+bool tipc_nametbl_subscribe(struct tipc_subscription *s, bool status)
 {
 	struct tipc_net *tn = net_generic(s->net, tipc_net_id);
 	u32 type = tipc_subscrp_convert_seq_type(s->evt.s.seq.type, s->swap);
 	int index = hash(type);
 	struct name_seq *seq;
 	struct tipc_name_seq ns;
+	bool res = true;
 
 	spin_lock_bh(&tn->nametbl_lock);
 	seq = nametbl_find_seq(s->net, type);
@@ -828,8 +829,10 @@ void tipc_nametbl_subscribe(struct tipc_subscription *s, bool status)
 		tipc_subscrp_convert_seq(&s->evt.s.seq, s->swap, &ns);
 		pr_warn("Failed to create subscription for {%u,%u,%u}\n",
 			ns.type, ns.lower, ns.upper);
+		res = false;
 	}
 	spin_unlock_bh(&tn->nametbl_lock);
+	return res;
 }
 
 /**
