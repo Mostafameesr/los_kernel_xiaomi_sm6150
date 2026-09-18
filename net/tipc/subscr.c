@@ -303,8 +303,13 @@ static int tipc_subscrp_subscribe(struct net *net, struct tipc_subscr *s,
 	spin_lock_bh(&subscriber->lock);
 	list_add(&sub->subscrp_list, &subscriber->subscrp_list);
 	sub->subscriber = subscriber;
-	tipc_nametbl_subscribe(sub, status);
 	tipc_subscrb_get(subscriber);
+	if (!tipc_nametbl_subscribe(sub, status)) {
+		list_del_init(&sub->subscrp_list);
+		spin_unlock_bh(&subscriber->lock);
+		tipc_subscrp_put(sub);
+		return -ENOMEM;
+	}
 	spin_unlock_bh(&subscriber->lock);
 
 	setup_timer(&sub->timer, tipc_subscrp_timeout, (unsigned long)sub);
