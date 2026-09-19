@@ -2149,6 +2149,13 @@ static void ufshcd_ungate_work(struct work_struct *work)
 	spin_unlock_irqrestore(hba->host->host_lock, flags);
 	ufshcd_hba_vreg_set_hpm(hba);
 	ufshcd_enable_clocks(hba);
+	/*
+	 * Match the newer Qualcomm/Spring clock-gating sequence: the host
+	 * interrupt is disabled while the controller clocks are gated and must
+	 * be restored before issuing Hibern8 Exit, whose completion is IRQ
+	 * driven.
+	 */
+	ufshcd_enable_irq(hba);
 
 	/* Exit from hibern8 */
 	if (ufshcd_can_hibern8_during_gating(hba)) {
@@ -2321,6 +2328,13 @@ static void ufshcd_gate_work(struct work_struct *work)
 		}
 		ufshcd_set_link_hibern8(hba);
 	}
+
+	/*
+	 * Keep the host IRQ quiesced while controller clocks are gated. Spring
+	 * does the same and re-enables it in the ungate path before Hibern8
+	 * Exit.
+	 */
+	ufshcd_disable_irq(hba);
 
 	/*
 	 * If auto hibern8 is supported and enabled then the link will already
@@ -2548,7 +2562,8 @@ static void ufshcd_init_clk_gating(struct ufs_hba *hba)
 	snprintf(wq_name, ARRAY_SIZE(wq_name), "ufs_clk_gating_%d",
 			hba->host->host_no);
 	hba->clk_gating.clk_gating_workq =
-		create_singlethread_workqueue(wq_name);
+		alloc_ordered_workqueue("%s", WQ_MEM_RECLAIM | WQ_HIGHPRI,
+					wq_name);
 
 	gating->is_enabled = true;
 
