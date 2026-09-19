@@ -3236,10 +3236,25 @@ ufshcd_wait_for_uic_cmd(struct ufs_hba *hba, struct uic_command *uic_cmd)
 	unsigned long flags;
 
 	if (wait_for_completion_timeout(&uic_cmd->done,
-					msecs_to_jiffies(UIC_CMD_TIMEOUT)))
+					msecs_to_jiffies(UIC_CMD_TIMEOUT))) {
 		ret = uic_cmd->argument2 & MASK_UIC_COMMAND_RESULT;
-	else
+	} else {
 		ret = -ETIMEDOUT;
+		dev_err(hba->dev,
+			"uic cmd 0x%x with arg3 0x%x completion timeout\n",
+			uic_cmd->command, uic_cmd->argument3);
+		/*
+		 * Match Spring: if the ISR already observed command completion,
+		 * use the hardware result instead of turning a delayed completion
+		 * wakeup into a false timeout.
+		 */
+		if (!uic_cmd->cmd_active) {
+			dev_err(hba->dev,
+				"%s: UIC command completed before timeout handling\n",
+				__func__);
+			ret = uic_cmd->argument2 & MASK_UIC_COMMAND_RESULT;
+		}
+	}
 
 	if (ret)
 		ufsdbg_set_err_state(hba);
@@ -3276,6 +3291,12 @@ __ufshcd_send_uic_cmd(struct ufs_hba *hba, struct uic_command *uic_cmd,
 	if (completion)
 		init_completion(&uic_cmd->done);
 
+	/*
+	 * Spring tracks whether hardware has actually completed the UIC
+	 * command. This lets timeout paths distinguish a lost/delayed wakeup
+	 * from a command that is still outstanding.
+	 */
+	uic_cmd->cmd_active = 1;
 	ufshcd_dispatch_uic_cmd(hba, uic_cmd);
 
 	return 0;
@@ -5176,7 +5197,6 @@ static int ufshcd_uic_pwr_ctrl(struct ufs_hba *hba, struct uic_command *cmd)
 	u8 status;
 	int ret;
 	bool reenable_intr = false;
-	int wait_retries = 6; /* Allows 3secs max wait time */
 
 	mutex_lock(&hba->uic_cmd_mutex);
 	init_completion(&uic_async_done);
@@ -5189,7 +5209,8 @@ static int ufshcd_uic_pwr_ctrl(struct ufs_hba *hba, struct uic_command *cmd)
 		ufshcd_disable_intr(hba, UIC_COMMAND_COMPL);
 		/*
 		 * Make sure UIC command completion interrupt is disabled before
-		 * issuing UIC command.
+		 * issuing the power command. Final power completion is reported
+		 * through UFSHCD_UIC_PWR_MASK.
 		 */
 		ufshcd_readl(hba, REG_INTERRUPT_ENABLE);
 		reenable_intr = true;
@@ -5203,54 +5224,41 @@ static int ufshcd_uic_pwr_ctrl(struct ufs_hba *hba, struct uic_command *cmd)
 		goto out;
 	}
 
-more_wait:
 	if (!wait_for_completion_timeout(hba->uic_async_done,
 					 msecs_to_jiffies(UIC_CMD_TIMEOUT))) {
-		u32 intr_status = 0;
-		s64 ts_since_last_intr;
+		u32 intr_status = ufshcd_readl(hba, REG_INTERRUPT_STATUS);
 
 		dev_err(hba->dev,
-			"pwr ctrl cmd 0x%x with mode 0x%x completion timeout\n",
-			cmd->command, cmd->argument3);
+			"pwr ctrl cmd 0x%x with mode 0x%x completion timeout, IS=0x%08x cmd_active=%d\n",
+			cmd->command, cmd->argument3, intr_status,
+			cmd->cmd_active);
+
 		/*
-		 * The controller must have triggered interrupt but ISR couldn't
-		 * run due to interrupt starvation.
-		 * Or ISR must have executed just after the timeout
-		 * (which clears IS registers)
-		 * If either of these two cases is true, then
-		 * wait for little more time for completion.
+		 * Spring behavior: the controller may have completed the power
+		 * operation while the waiter missed or raced the completion wakeup.
+		 * In that case cmd_active was cleared by the ISR; validate UPMCRS
+		 * instead of sleeping through six more 500 ms retries.
 		 */
-		intr_status = ufshcd_readl(hba, REG_INTERRUPT_STATUS);
-		ts_since_last_intr = ktime_ms_delta(ktime_get(),
-						hba->ufs_stats.last_intr_ts);
+		if (!cmd->cmd_active)
+			goto check_upmcrs;
 
-		if ((intr_status & UFSHCD_UIC_PWR_MASK) ||
-		    ((hba->ufs_stats.last_intr_status & UFSHCD_UIC_PWR_MASK) &&
-		     (ts_since_last_intr < (s64)UIC_CMD_TIMEOUT))) {
-			dev_info(hba->dev, "IS:0x%08x last_intr_sts:0x%08x last_intr_ts:%lld, retry-cnt:%d\n",
-				intr_status, hba->ufs_stats.last_intr_status,
-				hba->ufs_stats.last_intr_ts, wait_retries);
-			if (wait_retries--)
-				goto more_wait;
-
-			/*
-			 * If same state continues event after more wait time,
-			 * something must be hogging CPU.
-			 */
-			BUG_ON(hba->crash_on_err);
-		}
 		ret = -ETIMEDOUT;
 		goto out;
 	}
 
+check_upmcrs:
 	status = ufshcd_get_upmcrs(hba);
 	if (status != PWR_LOCAL) {
 		dev_err(hba->dev,
 			"pwr ctrl cmd 0x%0x failed, host upmcrs:0x%x\n",
 			cmd->command, status);
 		ret = (status != PWR_OK) ? status : -1;
+	} else {
+		ret = 0;
 	}
-	ufshcd_dme_cmd_log(hba, "dme_cmpl_2", hba->active_uic_cmd->command);
+	if (hba->active_uic_cmd)
+		ufshcd_dme_cmd_log(hba, "dme_cmpl_2",
+				   hba->active_uic_cmd->command);
 
 out:
 	if (ret) {
@@ -5259,8 +5267,6 @@ out:
 		ufshcd_print_pwr_info(hba);
 		ufshcd_print_host_regs(hba);
 		ufshcd_print_cmd_log(hba);
-		if (hba->crash_on_err)
-			BUG_ON(1);
 	}
 
 	ufshcd_save_tstamp_of_last_dme_cmd(hba);
@@ -5418,9 +5424,17 @@ int ufshcd_uic_hibern8_enter(struct ufs_hba *hba)
 		ret = __ufshcd_uic_hibern8_enter(hba);
 		if (!ret)
 			goto out;
-		else if (ret != -EAGAIN)
-			/* Unable to recover the link, so no point proceeding */
-			BUG();
+		else if (ret != -EAGAIN) {
+			/*
+			 * Do not turn a recoverable UFS error into an unconditional
+			 * kernel crash. Propagate the failure so upper error handling
+			 * can retain diagnostics and decide recovery.
+			 */
+			dev_err(hba->dev,
+				"%s: hibern8 enter recovery failed, ret=%d\n",
+				__func__, ret);
+			break;
+		}
 	}
 out:
 	return ret;
@@ -5447,9 +5461,10 @@ int ufshcd_uic_hibern8_exit(struct ufs_hba *hba)
 		dev_err(hba->dev, "%s: hibern8 exit failed. ret = %d\n",
 			__func__, ret);
 		ret = ufshcd_link_recovery(hba);
-		/* Unable to recover the link, so no point proceeding */
 		if (ret)
-			BUG();
+			dev_err(hba->dev,
+				"%s: link recovery failed, ret=%d\n",
+				__func__, ret);
 	} else {
 		ufshcd_vops_hibern8_notify(hba, UIC_CMD_DME_HIBER_EXIT,
 								POST_CHANGE);
@@ -6440,12 +6455,16 @@ static irqreturn_t ufshcd_uic_cmd_compl(struct ufs_hba *hba, u32 intr_status)
 			ufshcd_get_uic_cmd_result(hba);
 		hba->active_uic_cmd->argument3 =
 			ufshcd_get_dme_attr_val(hba);
+		if (!hba->uic_async_done)
+			hba->active_uic_cmd->cmd_active = 0;
 		complete(&hba->active_uic_cmd->done);
 		retval = IRQ_HANDLED;
 	}
 
 	if (intr_status & UFSHCD_UIC_PWR_MASK) {
 		if (hba->uic_async_done) {
+			if (hba->active_uic_cmd)
+				hba->active_uic_cmd->cmd_active = 0;
 			complete(hba->uic_async_done);
 			retval = IRQ_HANDLED;
 		} else if (ufshcd_is_auto_hibern8_supported(hba) &&
@@ -8052,11 +8071,14 @@ static int ufshcd_reset_and_restore(struct ufs_hba *hba)
 	} while (err && --retries);
 
 	/*
-	 * There is no point proceeding even after failing
-	 * to recover after multiple retries.
+	 * Newer Spring UFS core does not deliberately crash the kernel after
+	 * recovery exhaustion. Preserve the error and diagnostics so callers
+	 * and the SCSI error handler can continue controlled recovery.
 	 */
 	if (err && ufshcd_is_embedded_dev(hba))
-		BUG();
+		dev_err(hba->dev,
+			"%s: recovery exhausted after %d attempts, err=%d\n",
+			__func__, MAX_HOST_RESET_RETRIES, err);
 
 	return err;
 }
