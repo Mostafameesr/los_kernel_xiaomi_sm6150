@@ -28,6 +28,7 @@
 #include "sde_connector.h"
 #include "dsi_drm.h"
 #include "dsi_panel.h"
+#include "dsi_panel_mi.h"
 #include "sde_trace.h"
 #include "sde_encoder.h"
 

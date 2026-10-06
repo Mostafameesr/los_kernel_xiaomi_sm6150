@@ -37,6 +37,8 @@
 
 #define DSI_MODE_MAX 5
 
+struct dsi_display;
+
 enum dsi_panel_rotation {
 	DSI_PANEL_ROTATE_NONE = 0,
 	DSI_PANEL_ROTATE_HV_FLIP,
