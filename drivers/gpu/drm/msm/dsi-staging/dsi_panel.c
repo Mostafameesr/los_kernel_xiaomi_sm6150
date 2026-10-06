@@ -21,6 +21,7 @@
 #include <video/mipi_display.h>
 
 #include "dsi_panel.h"
+#include "dsi_panel_mi.h"
 #include "dsi_ctrl_hw.h"
 #include "dsi_parser.h"
 
@@ -4871,6 +4872,53 @@ int dsi_panel_apply_hbm_mode(struct dsi_panel *panel)
 	mutex_lock(&panel->panel_lock);
 	rc = dsi_panel_tx_cmd_set(panel, type);
 	mutex_unlock(&panel->panel_lock);
+
+	return rc;
+}
+
+int panel_disp_param_send(struct dsi_display *display, int param)
+{
+	struct dsi_panel *panel;
+	int rc = 0;
+	u32 group;
+
+	if (!display || !display->panel)
+		return -EINVAL;
+
+	panel = display->panel;
+	if (!dsi_panel_initialized(panel))
+		return -EAGAIN;
+
+	/*
+	 * Legacy Xiaomi disp_param is a bitfield split into feature groups.
+	 * Start with the feature group needed by the Sweet displayfeature HAL,
+	 * while preserving the existing Lineage direct-HBM implementation.
+	 */
+	group = param & 0x000F0000;
+	switch (group) {
+	case DISPPARAM_HBM_ON:
+		panel->hbm_mode = 1;
+		rc = dsi_panel_apply_hbm_mode(panel);
+		break;
+	case DISPPARAM_HBM_OFF:
+		panel->hbm_mode = 0;
+		rc = dsi_panel_apply_hbm_mode(panel);
+		break;
+	case DISPPARAM_BC_120HZ:
+		mutex_lock(&panel->panel_lock);
+		rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_DISP_BC_120HZ);
+		mutex_unlock(&panel->panel_lock);
+		break;
+	case DISPPARAM_BC_60HZ:
+		mutex_lock(&panel->panel_lock);
+		rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_DISP_BC_60HZ);
+		mutex_unlock(&panel->panel_lock);
+		break;
+	default:
+		pr_debug("unsupported legacy disp_param group 0x%x (param=0x%x)\n",
+			 group, param);
+		break;
+	}
 
 	return rc;
 }

@@ -307,6 +307,39 @@ int dsi_bridge_interface_enable(int timeout)
 }
 EXPORT_SYMBOL(dsi_bridge_interface_enable);
 
+static void dsi_bridge_disp_param_set(struct drm_bridge *bridge, int cmd)
+{
+	struct dsi_bridge *c_bridge;
+
+	if (!bridge)
+		return;
+
+	c_bridge = to_dsi_bridge(bridge);
+	if (!c_bridge || !c_bridge->display)
+		return;
+
+	if (panel_disp_param_send(c_bridge->display, cmd))
+		pr_debug("[%d] legacy disp_param 0x%x was not applied\n",
+			 c_bridge->id, cmd);
+}
+
+static ssize_t dsi_bridge_disp_param_get(struct drm_bridge *bridge, char *buf)
+{
+	struct dsi_bridge *c_bridge;
+	struct dsi_panel *panel;
+
+	if (!bridge || !buf)
+		return -EINVAL;
+
+	c_bridge = to_dsi_bridge(bridge);
+	if (!c_bridge || !c_bridge->display || !c_bridge->display->panel)
+		return -ENODEV;
+
+	panel = c_bridge->display->panel;
+	return scnprintf(buf, PAGE_SIZE, "0x%x\n",
+		panel->hbm_mode ? DISPPARAM_HBM_ON : DISPPARAM_HBM_OFF);
+}
+
 static int dsi_bridge_get_panel_info(struct drm_bridge *bridge, char *buf)
 {
 	int rc = 0;
@@ -670,6 +703,8 @@ static const struct drm_bridge_funcs dsi_bridge_ops = {
 	.disable      = dsi_bridge_disable,
 	.post_disable = dsi_bridge_post_disable,
 	.mode_set     = dsi_bridge_mode_set,
+	.disp_param_set = dsi_bridge_disp_param_set,
+	.disp_param_get = dsi_bridge_disp_param_get,
 	.disp_get_panel_info = dsi_bridge_get_panel_info,
 };
 
