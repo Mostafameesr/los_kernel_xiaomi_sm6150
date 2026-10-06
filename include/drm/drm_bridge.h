@@ -237,6 +237,13 @@ struct drm_bridge_funcs {
 	 */
 	void (*enable)(struct drm_bridge *bridge);
 
+	/*
+	 * Xiaomi legacy display-feature bridge hooks. These callbacks keep the
+	 * userspace disp_param ABI independent from the DSI implementation.
+	 */
+	void (*disp_param_set)(struct drm_bridge *bridge, int cmd);
+	ssize_t (*disp_param_get)(struct drm_bridge *bridge, char *buf);
+
 	int (*disp_get_panel_info)(struct drm_bridge *bridge, char *name);
 };
 
@@ -283,6 +290,8 @@ void drm_bridge_mode_set(struct drm_bridge *bridge,
 			struct drm_display_mode *adjusted_mode);
 void drm_bridge_pre_enable(struct drm_bridge *bridge);
 void drm_bridge_enable(struct drm_bridge *bridge);
+void drm_bridge_disp_param_set(struct drm_bridge *bridge, int cmd);
+ssize_t drm_bridge_disp_param_get(struct drm_bridge *bridge, char *buf);
 int dsi_bridge_interface_enable(int timeout);
 int drm_bridge_connector_init(struct drm_bridge *bridge,
 	struct drm_connector *connector);

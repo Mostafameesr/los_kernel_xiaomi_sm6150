@@ -18,6 +18,7 @@
 #include <linux/err.h>
 #include <linux/export.h>
 
+#include <drm/drm_bridge.h>
 #include <drm/drm_encoder.h>
 #include <drm/drm_sysfs.h>
 #include <drm/drmP.h>
@@ -260,11 +261,64 @@ static ssize_t panel_info_show(struct device *device,
 	return written;
 }
 
+static ssize_t disp_param_store(struct device *device,
+			       struct device_attribute *attr,
+			       const char *buf, size_t count)
+{
+	struct drm_connector *connector;
+	struct drm_encoder *encoder;
+	struct drm_bridge *bridge;
+	unsigned int param;
+
+	if (!device)
+		return -EINVAL;
+
+	connector = to_drm_connector(device);
+	if (!connector || !connector->encoder)
+		return -ENODEV;
+
+	encoder = connector->encoder;
+	bridge = encoder->bridge;
+	if (!bridge)
+		return -ENODEV;
+
+	if (sscanf(buf, "0x%x", &param) != 1 &&
+	    sscanf(buf, "%x", &param) != 1)
+		return -EINVAL;
+
+	drm_bridge_disp_param_set(bridge, param);
+	return count;
+}
+
+static ssize_t disp_param_show(struct device *device,
+			      struct device_attribute *attr,
+			      char *buf)
+{
+	struct drm_connector *connector;
+	struct drm_encoder *encoder;
+	struct drm_bridge *bridge;
+
+	if (!device)
+		return -EINVAL;
+
+	connector = to_drm_connector(device);
+	if (!connector || !connector->encoder)
+		return -ENODEV;
+
+	encoder = connector->encoder;
+	bridge = encoder->bridge;
+	if (!bridge)
+		return -ENODEV;
+
+	return drm_bridge_disp_param_get(bridge, buf);
+}
+
 static DEVICE_ATTR_RW(status);
 static DEVICE_ATTR_RO(enabled);
 static DEVICE_ATTR_RO(dpms);
 static DEVICE_ATTR_RO(modes);
 static DEVICE_ATTR_RO(panel_info);
+static DEVICE_ATTR_RW(disp_param);
 
 static struct attribute *connector_dev_attrs[] = {
 	&dev_attr_status.attr,
@@ -272,6 +326,7 @@ static struct attribute *connector_dev_attrs[] = {
 	&dev_attr_dpms.attr,
 	&dev_attr_modes.attr,
 	&dev_attr_panel_info.attr,
+	&dev_attr_disp_param.attr,
 	NULL
 };
 
