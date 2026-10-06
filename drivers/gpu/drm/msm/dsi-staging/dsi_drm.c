@@ -319,7 +319,7 @@ static void dsi_bridge_disp_param_set(struct drm_bridge *bridge, int cmd)
 	if (!c_bridge || !c_bridge->display)
 		return;
 
-	if (panel_disp_param_send(c_bridge->display, cmd))
+	if (panel_disp_param_send(c_bridge->display->panel, cmd))
 		pr_debug("[%d] legacy disp_param 0x%x was not applied\n",
 			 c_bridge->id, cmd);
 }

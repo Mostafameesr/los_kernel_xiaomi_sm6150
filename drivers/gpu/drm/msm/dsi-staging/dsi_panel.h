@@ -37,7 +37,6 @@
 
 #define DSI_MODE_MAX 5
 
-struct dsi_display;
 
 enum dsi_panel_rotation {
 	DSI_PANEL_ROTATE_NONE = 0,
@@ -395,6 +394,6 @@ int dsi_panel_set_fod_hbm(struct dsi_panel *panel, bool status);
 u32 dsi_panel_get_fod_dim_alpha(struct dsi_panel *panel);
 
 int dsi_panel_apply_hbm_mode(struct dsi_panel *panel);
-int panel_disp_param_send(struct dsi_display *display, int param);
+int panel_disp_param_send(struct dsi_panel *panel, int param);
 
 #endif /* _DSI_PANEL_H_ */

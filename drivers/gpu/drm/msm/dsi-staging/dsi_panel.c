@@ -4876,16 +4876,13 @@ int dsi_panel_apply_hbm_mode(struct dsi_panel *panel)
 	return rc;
 }
 
-int panel_disp_param_send(struct dsi_display *display, int param)
+int panel_disp_param_send(struct dsi_panel *panel, int param)
 {
-	struct dsi_panel *panel;
 	int rc = 0;
 	u32 group;
 
-	if (!display || !display->panel)
+	if (!panel)
 		return -EINVAL;
-
-	panel = display->panel;
 	if (!dsi_panel_initialized(panel))
 		return -EAGAIN;
 
