@@ -245,7 +245,7 @@ error:
 	return rc;
 }
 
-static int dsi_display_set_thermal_hbm_disabled(struct drm_connector *connector,
+int dsi_display_set_thermal_hbm_disabled(struct drm_connector *connector,
 			bool thermal_hbm_disabled)
 {
 	struct sde_connector *c_conn;
