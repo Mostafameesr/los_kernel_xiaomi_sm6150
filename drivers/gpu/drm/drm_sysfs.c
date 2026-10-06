@@ -318,8 +318,10 @@ static ssize_t doze_brightness_show(struct device *device,
 				    char *buf)
 {
 	struct drm_connector *connector = to_drm_connector(device);
+	struct drm_device *dev = connector->dev;
 
-	return dsi_bridge_disp_get_doze_backlight(connector, buf);
+	return scnprintf(buf, PAGE_SIZE, "%d\n",
+			 dev ? dev->doze_brightness : DOZE_BRIGHTNESS_INVALID);
 }
 
 static ssize_t doze_backlight_store(struct device *device,

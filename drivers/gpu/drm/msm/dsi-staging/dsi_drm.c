@@ -347,35 +347,47 @@ int dsi_bridge_disp_set_doze_backlight(struct drm_connector *connector,
 
 	if (!connector || !connector->encoder || !connector->encoder->bridge)
 		return -EINVAL;
-	if (doze_backlight < 0 || doze_backlight > 2)
+	if (doze_backlight < DOZE_BRIGHTNESS_INVALID ||
+	    doze_backlight > DOZE_BRIGHTNESS_TO_NORMAL)
 		return -EINVAL;
 
 	c_bridge = to_dsi_bridge(connector->encoder->bridge);
-	if (!c_bridge || !c_bridge->display || !c_bridge->display->panel)
+	if (!c_bridge || !c_bridge->display || !c_bridge->display->panel ||
+	    !c_bridge->display->drm_dev)
 		return -ENODEV;
 
 	display = c_bridge->display;
 	panel = display->panel;
 
 	mutex_lock(&panel->panel_lock);
-	if (!dsi_panel_initialized(panel)) {
-		rc = -EAGAIN;
+	display->drm_dev->doze_brightness = doze_backlight;
+
+	/*
+	 * Match Sweet's sysfs contract: keep the requested state even when the
+	 * panel is not ready yet, instead of failing the userspace write.
+	 */
+	if (!dsi_panel_initialized(panel))
 		goto out;
-	}
 
 	switch (doze_backlight) {
-	case 0:
-		rc = dsi_panel_set_doze_status(panel, false);
+	case DOZE_BRIGHTNESS_INVALID:
+		/* INVALID is state only; it must not force a NOLP transition. */
 		break;
-	case 1:
+	case DOZE_BRIGHTNESS_HBM:
 		rc = dsi_panel_set_doze_mode(panel, DSI_DOZE_HBM);
 		if (!rc)
 			rc = dsi_panel_set_doze_status(panel, true);
 		break;
-	case 2:
+	case DOZE_BRIGHTNESS_LBM:
 		rc = dsi_panel_set_doze_mode(panel, DSI_DOZE_LPM);
 		if (!rc)
 			rc = dsi_panel_set_doze_status(panel, true);
+		break;
+	case DOZE_BRIGHTNESS_TO_NORMAL:
+		rc = dsi_panel_set_doze_status(panel, false);
+		if (!rc)
+			display->drm_dev->doze_brightness =
+				DOZE_BRIGHTNESS_INVALID;
 		break;
 	}
 
@@ -388,6 +400,7 @@ ssize_t dsi_bridge_disp_get_doze_backlight(struct drm_connector *connector,
 					   char *buf)
 {
 	struct dsi_bridge *c_bridge;
+	struct dsi_display *display;
 	struct dsi_panel *panel;
 	int value;
 
@@ -395,17 +408,15 @@ ssize_t dsi_bridge_disp_get_doze_backlight(struct drm_connector *connector,
 		return -EINVAL;
 
 	c_bridge = to_dsi_bridge(connector->encoder->bridge);
-	if (!c_bridge || !c_bridge->display || !c_bridge->display->panel)
+	if (!c_bridge || !c_bridge->display || !c_bridge->display->panel ||
+	    !c_bridge->display->drm_dev)
 		return -ENODEV;
 
-	panel = c_bridge->display->panel;
+	display = c_bridge->display;
+	panel = display->panel;
+
 	mutex_lock(&panel->panel_lock);
-	if (!panel->doze_enabled)
-		value = 0;
-	else if (panel->doze_mode == DSI_DOZE_HBM)
-		value = 1;
-	else
-		value = 2;
+	value = display->drm_dev->doze_brightness;
 	mutex_unlock(&panel->panel_lock);
 
 	return scnprintf(buf, PAGE_SIZE, "%d\n", value);
