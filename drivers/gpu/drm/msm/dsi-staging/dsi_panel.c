@@ -935,7 +935,25 @@ int dsi_panel_set_backlight(struct dsi_panel *panel, u32 bl_lvl)
 		rc = backlight_device_set_brightness(bl->raw_bd, bl_lvl);
 		break;
 	case DSI_BACKLIGHT_DCS:
-		rc = dsi_panel_update_backlight(panel, bl_lvl);
+		/*
+		 * Sweet K6 keeps normal 0x51 backlight writes out of the HBM
+		 * window.  The MIUI 14 panel commands toggle HBM through 0x53,
+		 * while the current normal level remains latched in 0x51.
+		 */
+		if (panel->f4_51_ctrl_flag && panel->hbm_enabled &&
+		    !panel->thermal_hbm_disabled && !panel->hbm_brightness) {
+			pr_debug("skip normal backlight %u while HBM is active\n",
+				 bl_lvl);
+		} else if (panel->oled_panel_video_mode && panel->doze_enabled) {
+			/*
+			 * DOZE_HBM/DOZE_LBM program 0x51 themselves.  Do not let a
+			 * regular brightness write overwrite the active AOD level.
+			 */
+			pr_debug("skip normal backlight %u while doze is active\n",
+				 bl_lvl);
+		} else {
+			rc = dsi_panel_update_backlight(panel, bl_lvl);
+		}
 		break;
 	case DSI_BACKLIGHT_EXTERNAL:
 		break;
@@ -946,6 +964,9 @@ int dsi_panel_set_backlight(struct dsi_panel *panel, u32 bl_lvl)
 		pr_debug("Backlight type(%d) not supported\n", bl->type);
 		rc = -ENOTSUPP;
 	}
+
+	if (panel->skip_dimmingon == STATE_DIM_RESTORE && bl_lvl)
+		panel->skip_dimmingon = STATE_NONE;
 
 	panel->last_bl_lvl = bl_lvl;
 	return rc;
@@ -3661,6 +3682,16 @@ static void dsi_panel_parse_xiaomi_legacy_config(struct dsi_panel *panel)
 		utils->read_bool(utils->data, "qcom,dispparam-enabled");
 	panel->k6_dc_flag =
 		utils->read_bool(utils->data, "qcom,mdss-dsi-panel-k6-dc-flag");
+	panel->f4_51_ctrl_flag =
+		utils->read_bool(utils->data, "qcom,dispparam-f4-51-ctrl-flag");
+	panel->oled_panel_video_mode =
+		utils->read_bool(utils->data, "qcom,mdss-dsi-oled-panel-video-mode");
+
+	rc = utils->read_u32(utils->data,
+		"qcom,mdss-dsi-panel-hbm-brightness",
+		&panel->hbm_brightness);
+	if (rc)
+		panel->hbm_brightness = 0;
 
 	rc = utils->read_u32(utils->data,
 		"qcom,mdss-dsi-panel-dc-threshold", &panel->dc_threshold);

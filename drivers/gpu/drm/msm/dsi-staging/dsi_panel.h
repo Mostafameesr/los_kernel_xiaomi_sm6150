@@ -261,7 +261,10 @@ struct dsi_panel {
 	bool dispparam_enabled;
 	bool dc_enable;
 	bool k6_dc_flag;
+	bool f4_51_ctrl_flag;
+	bool oled_panel_video_mode;
 	u32 dc_threshold;
+	u32 hbm_brightness;
 	u32 last_bl_lvl;
 	bool hbm_enabled;
 	bool thermal_hbm_disabled;
