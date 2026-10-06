@@ -98,6 +98,12 @@ int dsi_display_get_thermal_hbm_disabled(struct drm_connector *connector,
 					 bool *thermal_hbm_disabled);
 int dsi_display_set_thermal_hbm_disabled(struct drm_connector *connector,
 					 bool thermal_hbm_disabled);
+int dsi_bridge_disp_set_doze_backlight(struct drm_connector *connector,
+				       int doze_backlight);
+ssize_t dsi_bridge_disp_get_doze_backlight(struct drm_connector *connector,
+					   char *buf);
+ssize_t dsi_display_dynamic_fps_read(struct drm_connector *connector,
+				     char *buf);
 
 /* drm_gem.c */
 int drm_gem_init(struct drm_device *dev);

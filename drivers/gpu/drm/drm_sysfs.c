@@ -313,6 +313,49 @@ static ssize_t disp_param_show(struct device *device,
 	return drm_bridge_disp_param_get(bridge, buf);
 }
 
+static ssize_t doze_brightness_show(struct device *device,
+				    struct device_attribute *attr,
+				    char *buf)
+{
+	struct drm_connector *connector = to_drm_connector(device);
+
+	return dsi_bridge_disp_get_doze_backlight(connector, buf);
+}
+
+static ssize_t doze_backlight_store(struct device *device,
+				    struct device_attribute *attr,
+				    const char *buf, size_t count)
+{
+	struct drm_connector *connector = to_drm_connector(device);
+	int value;
+	int ret;
+
+	ret = kstrtoint(buf, 0, &value);
+	if (ret)
+		return ret;
+
+	ret = dsi_bridge_disp_set_doze_backlight(connector, value);
+	return ret ? ret : count;
+}
+
+static ssize_t doze_backlight_show(struct device *device,
+				   struct device_attribute *attr,
+				   char *buf)
+{
+	struct drm_connector *connector = to_drm_connector(device);
+
+	return dsi_bridge_disp_get_doze_backlight(connector, buf);
+}
+
+static ssize_t dynamic_fps_show(struct device *device,
+				struct device_attribute *attr,
+				char *buf)
+{
+	struct drm_connector *connector = to_drm_connector(device);
+
+	return dsi_display_dynamic_fps_read(connector, buf);
+}
+
 static ssize_t thermal_hbm_disabled_store(struct device *device,
 					  struct device_attribute *attr,
 					  const char *buf, size_t count)
@@ -350,6 +393,9 @@ static DEVICE_ATTR_RO(dpms);
 static DEVICE_ATTR_RO(modes);
 static DEVICE_ATTR_RO(panel_info);
 static DEVICE_ATTR_RW(disp_param);
+static DEVICE_ATTR_RO(doze_brightness);
+static DEVICE_ATTR_RW(doze_backlight);
+static DEVICE_ATTR_RO(dynamic_fps);
 static DEVICE_ATTR_RW(thermal_hbm_disabled);
 
 static struct attribute *connector_dev_attrs[] = {
@@ -359,6 +405,9 @@ static struct attribute *connector_dev_attrs[] = {
 	&dev_attr_modes.attr,
 	&dev_attr_panel_info.attr,
 	&dev_attr_disp_param.attr,
+	&dev_attr_doze_brightness.attr,
+	&dev_attr_doze_backlight.attr,
+	&dev_attr_dynamic_fps.attr,
 	&dev_attr_thermal_hbm_disabled.attr,
 	NULL
 };

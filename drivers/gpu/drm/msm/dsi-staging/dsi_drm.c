@@ -341,6 +341,80 @@ static ssize_t dsi_bridge_disp_param_get(struct drm_bridge *bridge, char *buf)
 		panel->hbm_mode ? DISPPARAM_HBM_ON : DISPPARAM_HBM_OFF);
 }
 
+int dsi_bridge_disp_set_doze_backlight(struct drm_connector *connector,
+				       int doze_backlight)
+{
+	struct dsi_bridge *c_bridge;
+	struct dsi_display *display;
+	struct dsi_panel *panel;
+	int rc = 0;
+
+	if (!connector || !connector->encoder || !connector->encoder->bridge)
+		return -EINVAL;
+	if (doze_backlight < 0 || doze_backlight > 2)
+		return -EINVAL;
+
+	c_bridge = to_dsi_bridge(connector->encoder->bridge);
+	if (!c_bridge || !c_bridge->display || !c_bridge->display->panel)
+		return -ENODEV;
+
+	display = c_bridge->display;
+	panel = display->panel;
+
+	mutex_lock(&panel->panel_lock);
+	if (!dsi_panel_initialized(panel)) {
+		rc = -EAGAIN;
+		goto out;
+	}
+
+	switch (doze_backlight) {
+	case 0:
+		rc = dsi_panel_set_doze_status(panel, false);
+		break;
+	case 1:
+		rc = dsi_panel_set_doze_mode(panel, DSI_DOZE_HBM);
+		if (!rc)
+			rc = dsi_panel_set_doze_status(panel, true);
+		break;
+	case 2:
+		rc = dsi_panel_set_doze_mode(panel, DSI_DOZE_LPM);
+		if (!rc)
+			rc = dsi_panel_set_doze_status(panel, true);
+		break;
+	}
+
+out:
+	mutex_unlock(&panel->panel_lock);
+	return rc;
+}
+
+ssize_t dsi_bridge_disp_get_doze_backlight(struct drm_connector *connector,
+					   char *buf)
+{
+	struct dsi_bridge *c_bridge;
+	struct dsi_panel *panel;
+	int value;
+
+	if (!connector || !connector->encoder || !connector->encoder->bridge || !buf)
+		return -EINVAL;
+
+	c_bridge = to_dsi_bridge(connector->encoder->bridge);
+	if (!c_bridge || !c_bridge->display || !c_bridge->display->panel)
+		return -ENODEV;
+
+	panel = c_bridge->display->panel;
+	mutex_lock(&panel->panel_lock);
+	if (!panel->doze_enabled)
+		value = 0;
+	else if (panel->doze_mode == DSI_DOZE_HBM)
+		value = 1;
+	else
+		value = 2;
+	mutex_unlock(&panel->panel_lock);
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n", value);
+}
+
 static int dsi_bridge_get_panel_info(struct drm_bridge *bridge, char *buf)
 {
 	int rc = 0;

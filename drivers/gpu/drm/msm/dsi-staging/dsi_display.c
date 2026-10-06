@@ -5122,6 +5122,37 @@ error:
 	return rc;
 }
 
+ssize_t dsi_display_dynamic_fps_read(struct drm_connector *connector,
+				     char *buf)
+{
+	struct sde_connector *c_conn;
+	struct dsi_display *display;
+	struct dsi_display_mode *cur_mode;
+	ssize_t ret;
+
+	if (!connector || !buf)
+		return -EINVAL;
+
+	c_conn = to_sde_connector(connector);
+	if (!c_conn->display || c_conn->connector_type != DRM_MODE_CONNECTOR_DSI)
+		return -EINVAL;
+
+	display = (struct dsi_display *)c_conn->display;
+	if (!display->panel)
+		return -ENODEV;
+
+	mutex_lock(&display->display_lock);
+	cur_mode = display->panel->cur_mode;
+	if (cur_mode)
+		ret = scnprintf(buf, PAGE_SIZE, "%d\n",
+				cur_mode->timing.refresh_rate);
+	else
+		ret = scnprintf(buf, PAGE_SIZE, "null\n");
+	mutex_unlock(&display->display_lock);
+
+	return ret;
+}
+
 static ssize_t sysfs_doze_status_read(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
