@@ -94,6 +94,10 @@ void drm_sysfs_destroy(void);
 struct device *drm_sysfs_minor_alloc(struct drm_minor *minor);
 int drm_sysfs_connector_add(struct drm_connector *connector);
 void drm_sysfs_connector_remove(struct drm_connector *connector);
+int dsi_display_get_thermal_hbm_disabled(struct drm_connector *connector,
+					 bool *thermal_hbm_disabled);
+int dsi_display_set_thermal_hbm_disabled(struct drm_connector *connector,
+					 bool thermal_hbm_disabled);
 
 /* drm_gem.c */
 int drm_gem_init(struct drm_device *dev);

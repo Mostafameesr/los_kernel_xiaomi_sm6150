@@ -4968,6 +4968,45 @@ int dsi_panel_apply_hbm_mode(struct dsi_panel *panel)
 	return rc;
 }
 
+int dsi_panel_set_thermal_hbm_disabled(struct dsi_panel *panel,
+				       bool thermal_hbm_disabled)
+{
+	bool restore_hbm;
+
+	if (!panel)
+		return -EINVAL;
+
+	mutex_lock(&panel->panel_lock);
+	if (panel->thermal_hbm_disabled == thermal_hbm_disabled) {
+		mutex_unlock(&panel->panel_lock);
+		return 0;
+	}
+
+	panel->thermal_hbm_disabled = thermal_hbm_disabled;
+	restore_hbm = panel->hbm_enabled && panel->panel_initialized;
+	if (restore_hbm)
+		panel->hbm_mode = thermal_hbm_disabled ? 0 : 1;
+	mutex_unlock(&panel->panel_lock);
+
+	if (restore_hbm)
+		return dsi_panel_apply_hbm_mode(panel);
+
+	return 0;
+}
+
+int dsi_panel_get_thermal_hbm_disabled(struct dsi_panel *panel,
+				       bool *thermal_hbm_disabled)
+{
+	if (!panel || !thermal_hbm_disabled)
+		return -EINVAL;
+
+	mutex_lock(&panel->panel_lock);
+	*thermal_hbm_disabled = panel->thermal_hbm_disabled;
+	mutex_unlock(&panel->panel_lock);
+
+	return 0;
+}
+
 int panel_disp_param_send(struct dsi_panel *panel, int param)
 {
 	int rc = 0;

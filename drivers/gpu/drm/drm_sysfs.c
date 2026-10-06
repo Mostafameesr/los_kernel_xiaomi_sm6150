@@ -313,12 +313,44 @@ static ssize_t disp_param_show(struct device *device,
 	return drm_bridge_disp_param_get(bridge, buf);
 }
 
+static ssize_t thermal_hbm_disabled_store(struct device *device,
+					  struct device_attribute *attr,
+					  const char *buf, size_t count)
+{
+	struct drm_connector *connector = to_drm_connector(device);
+	bool disabled;
+	int ret;
+
+	ret = kstrtobool(buf, &disabled);
+	if (ret)
+		return ret;
+
+	ret = dsi_display_set_thermal_hbm_disabled(connector, disabled);
+	return ret ? ret : count;
+}
+
+static ssize_t thermal_hbm_disabled_show(struct device *device,
+					 struct device_attribute *attr,
+					 char *buf)
+{
+	struct drm_connector *connector = to_drm_connector(device);
+	bool disabled = false;
+	int ret;
+
+	ret = dsi_display_get_thermal_hbm_disabled(connector, &disabled);
+	if (ret)
+		return ret;
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n", disabled);
+}
+
 static DEVICE_ATTR_RW(status);
 static DEVICE_ATTR_RO(enabled);
 static DEVICE_ATTR_RO(dpms);
 static DEVICE_ATTR_RO(modes);
 static DEVICE_ATTR_RO(panel_info);
 static DEVICE_ATTR_RW(disp_param);
+static DEVICE_ATTR_RW(thermal_hbm_disabled);
 
 static struct attribute *connector_dev_attrs[] = {
 	&dev_attr_status.attr,
@@ -327,6 +359,7 @@ static struct attribute *connector_dev_attrs[] = {
 	&dev_attr_modes.attr,
 	&dev_attr_panel_info.attr,
 	&dev_attr_disp_param.attr,
+	&dev_attr_thermal_hbm_disabled.attr,
 	NULL
 };
 

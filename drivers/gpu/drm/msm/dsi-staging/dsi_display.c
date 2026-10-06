@@ -245,7 +245,49 @@ error:
 	return rc;
 }
 
-static int dsi_display_cmd_engine_enable(struct dsi_display *display)
+static int dsi_display_set_thermal_hbm_disabled(struct drm_connector *connector,
+			bool thermal_hbm_disabled)
+{
+	struct sde_connector *c_conn;
+	struct dsi_display *display;
+
+	if (!connector)
+		return -EINVAL;
+
+	c_conn = to_sde_connector(connector);
+	if (!c_conn->display || c_conn->connector_type != DRM_MODE_CONNECTOR_DSI)
+		return -EINVAL;
+
+	display = (struct dsi_display *)c_conn->display;
+	if (!display->panel)
+		return -ENODEV;
+
+	return dsi_panel_set_thermal_hbm_disabled(display->panel,
+		thermal_hbm_disabled);
+}
+
+int dsi_display_get_thermal_hbm_disabled(struct drm_connector *connector,
+			bool *thermal_hbm_disabled)
+{
+	struct sde_connector *c_conn;
+	struct dsi_display *display;
+
+	if (!connector || !thermal_hbm_disabled)
+		return -EINVAL;
+
+	c_conn = to_sde_connector(connector);
+	if (!c_conn->display || c_conn->connector_type != DRM_MODE_CONNECTOR_DSI)
+		return -EINVAL;
+
+	display = (struct dsi_display *)c_conn->display;
+	if (!display->panel)
+		return -ENODEV;
+
+	return dsi_panel_get_thermal_hbm_disabled(display->panel,
+		thermal_hbm_disabled);
+}
+
+int dsi_display_cmd_engine_enable(struct dsi_display *display)
 {
 	int rc = 0;
 	int i;
