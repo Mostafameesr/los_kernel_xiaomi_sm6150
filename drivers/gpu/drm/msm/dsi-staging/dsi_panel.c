@@ -861,6 +861,52 @@ int dsi_panel_set_fod_hbm(struct dsi_panel *panel, bool status)
 	return rc;
 }
 
+static bool dsi_panel_set_k6_dc_backlight(struct dsi_panel *panel, u32 bl_lvl)
+{
+	static const u8 write_mask[21] = {
+		1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1,
+		1, 1, 0, 1, 1, 1, 0, 1, 1, 1
+	};
+	struct dsi_panel_cmd_set *set;
+	struct dsi_cmd_desc *cmds;
+	enum dsi_cmd_set_type type;
+	u8 *tx_buf;
+	int i, rc, crc_value;
+
+	if (!panel->k6_dc_flag || !panel->dc_enable || !bl_lvl ||
+	    bl_lvl >= panel->dc_threshold || !panel->cur_mode ||
+	    !panel->cur_mode->priv_info)
+		return false;
+
+	crc_value = DIV_ROUND_CLOSEST(5125 * bl_lvl + 49000, 10000);
+	crc_value = clamp(crc_value, (int)panel->bl_config.bl_min_level, 255);
+
+	type = panel->cur_mode->timing.refresh_rate == 60 ?
+		DSI_CMD_SET_DISP_DC_CRC_SETTING_60HZ :
+		DSI_CMD_SET_DISP_DC_CRC_SETTING_120HZ;
+
+	set = &panel->cur_mode->priv_info->cmd_sets[type];
+	if (!set->cmds || set->count <= 4)
+		return false;
+
+	cmds = set->cmds;
+	if (!cmds[4].msg.tx_buf || cmds[4].msg.tx_len < 22)
+		return false;
+
+	tx_buf = (u8 *)cmds[4].msg.tx_buf;
+	for (i = 0; i < ARRAY_SIZE(write_mask); i++)
+		tx_buf[1 + i] = write_mask[i] ? crc_value : 0;
+
+	rc = dsi_panel_tx_cmd_set(panel, type);
+	if (rc) {
+		pr_err("[%s] failed to set K6 DC CRC, rc=%d\n",
+			panel->name, rc);
+		return false;
+	}
+
+	return true;
+}
+
 int dsi_panel_set_backlight(struct dsi_panel *panel, u32 bl_lvl)
 {
 	int rc = 0;
@@ -874,7 +920,12 @@ int dsi_panel_set_backlight(struct dsi_panel *panel, u32 bl_lvl)
 
 	if (bl_lvl > 0)
 		bl_lvl = ea_panel_calc_backlight(bl_lvl < bl_dc_min ? bl_dc_min : bl_lvl);
-		
+
+	if (dsi_panel_set_k6_dc_backlight(panel, bl_lvl)) {
+		panel->last_bl_lvl = bl_lvl;
+		return 0;
+	}
+
 	if (bl_lvl == 0)
         dsi_panel_tx_cmd_set(panel,
                 DSI_CMD_SET_DISP_DIMMINGOFF);
@@ -896,6 +947,7 @@ int dsi_panel_set_backlight(struct dsi_panel *panel, u32 bl_lvl)
 		rc = -ENOTSUPP;
 	}
 
+	panel->last_bl_lvl = bl_lvl;
 	return rc;
 }
 
@@ -1938,6 +1990,7 @@ const char *cmd_set_prop_map[DSI_CMD_SET_MAX] = {
 	"qcom,mdss-dsi-post-mode-switch-on-command",
 	"qcom,mdss-dsi-qsync-on-commands",
 	"qcom,mdss-dsi-qsync-off-commands",
+	"qcom,mdss-dsi-dispparam-dimmingon-command",
 	"qcom,mdss-dsi-dispparam-dimmingoff-command",
 	"qcom,mdss-dsi-doze-hbm-command",
 	"qcom,mdss-dsi-doze-lbm-command",
@@ -1946,6 +1999,11 @@ const char *cmd_set_prop_map[DSI_CMD_SET_MAX] = {
 	"qcom,mdss-dsi-dispparam-hbm-fod-on-command",
 	"qcom,mdss-dsi-dispparam-hbm-fod-off-command",
 	"qcom,mdss-dsi-read-lockdown-info-command",
+	"qcom,mdss-dsi-dispparam-crc-off-command",
+	"qcom,mdss-dsi-dispparam-flat-mode-on-command",
+	"qcom,mdss-dsi-dispparam-flat-mode-off-command",
+	"qcom,mdss-dsi-dispparam-60hz-dc-crc-setting-command",
+	"qcom,mdss-dsi-dispparam-120hz-dc-crc-setting-command",
 	"qcom,mdss-dsi-dispparam-bc-120hz-command",
 	"qcom,mdss-dsi-dispparam-bc-60hz-command",
 };
@@ -1974,6 +2032,7 @@ const char *cmd_set_state_map[DSI_CMD_SET_MAX] = {
 	"qcom,mdss-dsi-post-mode-switch-on-command-state",
 	"qcom,mdss-dsi-qsync-on-commands-state",
 	"qcom,mdss-dsi-qsync-off-commands-state",
+	"qcom,mdss-dsi-dispparam-dimmingon-command-state",
 	"qcom,mdss-dsi-dispparam-dimmingoff-command-state",
 	"qcom,mdss-dsi-dispparam-hbm-on-command-state",
 	"qcom,mdss-dsi-dispparam-hbm-off-command-state",
@@ -1982,6 +2041,11 @@ const char *cmd_set_state_map[DSI_CMD_SET_MAX] = {
 	"qcom,mdss-dsi-dispparam-hbm-fod-on-command-state",
 	"qcom,mdss-dsi-dispparam-hbm-fod-off-command-state",
 	"qcom,mdss-dsi-read-lockdown-info-command-state",
+	"qcom,mdss-dsi-dispparam-crc-off-command-state",
+	"qcom,mdss-dsi-dispparam-flat-mode-on-command-state",
+	"qcom,mdss-dsi-dispparam-flat-mode-off-command-state",
+	"qcom,mdss-dsi-dispparam-60hz-dc-crc-setting-command-state",
+	"qcom,mdss-dsi-dispparam-120hz-dc-crc-setting-command-state",
 	"qcom,mdss-dsi-dispparam-bc-120hz-command-state",
 	"qcom,mdss-dsi-dispparam-bc-60hz-command-state",
 };
@@ -3587,6 +3651,32 @@ end:
 #ifdef CONFIG_MACH_XIAOMI_VIOLET
 extern char g_lcd_id[128];
 #endif
+
+static void dsi_panel_parse_xiaomi_legacy_config(struct dsi_panel *panel)
+{
+	struct dsi_parser_utils *utils = &panel->utils;
+	int rc;
+
+	panel->dispparam_enabled =
+		utils->read_bool(utils->data, "qcom,dispparam-enabled");
+	panel->k6_dc_flag =
+		utils->read_bool(utils->data, "qcom,mdss-dsi-panel-k6-dc-flag");
+
+	rc = utils->read_u32(utils->data,
+		"qcom,mdss-dsi-panel-dc-threshold", &panel->dc_threshold);
+	if (rc)
+		panel->dc_threshold = 440;
+
+	panel->dc_enable = false;
+	panel->hbm_enabled = false;
+	panel->thermal_hbm_disabled = false;
+	panel->skip_dimmingon = STATE_NONE;
+	panel->last_bl_lvl = 0;
+
+	pr_info("legacy displayfeature: disp_param=%d k6_dc=%d dc_threshold=%u\n",
+		panel->dispparam_enabled, panel->k6_dc_flag, panel->dc_threshold);
+}
+
 struct dsi_panel *dsi_panel_get(struct device *parent,
 				struct device_node *of_node,
 				struct device_node *parser_node,
@@ -3613,6 +3703,8 @@ struct dsi_panel *dsi_panel_get(struct device *parent,
 				"qcom,mdss-dsi-panel-name", NULL);
 	if (!panel->name)
 		panel->name = DSI_PANEL_DEFAULT_LABEL;
+
+	dsi_panel_parse_xiaomi_legacy_config(panel);
 
 	/*
 	 * Set panel type to LCD as default.
@@ -4883,23 +4975,54 @@ int panel_disp_param_send(struct dsi_panel *panel, int param)
 
 	if (!panel)
 		return -EINVAL;
+	if (!panel->dispparam_enabled)
+		return -ENOTSUPP;
 	if (!dsi_panel_initialized(panel))
 		return -EAGAIN;
 
-	/*
-	 * Legacy Xiaomi disp_param is a bitfield split into feature groups.
-	 * Start with the feature group needed by the Sweet displayfeature HAL,
-	 * while preserving the existing Lineage direct-HBM implementation.
-	 */
+	group = param & 0x00000F00;
+	switch (group) {
+	case DISPPARAM_DIMMING_OFF:
+		mutex_lock(&panel->panel_lock);
+		rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_DISP_DIMMINGOFF);
+		mutex_unlock(&panel->panel_lock);
+		break;
+	case DISPPARAM_DIMMING:
+		if (panel->skip_dimmingon != STATE_DIM_BLOCK) {
+			mutex_lock(&panel->panel_lock);
+			rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_DISP_DIMMINGON);
+			mutex_unlock(&panel->panel_lock);
+		}
+		break;
+	default:
+		break;
+	}
+
 	group = param & 0x000F0000;
 	switch (group) {
 	case DISPPARAM_HBM_ON:
-		panel->hbm_mode = 1;
-		rc = dsi_panel_apply_hbm_mode(panel);
+		if (!panel->thermal_hbm_disabled) {
+			panel->hbm_mode = 1;
+			rc = dsi_panel_apply_hbm_mode(panel);
+		}
+		panel->hbm_enabled = true;
+		panel->skip_dimmingon = STATE_DIM_BLOCK;
 		break;
 	case DISPPARAM_HBM_OFF:
 		panel->hbm_mode = 0;
 		rc = dsi_panel_apply_hbm_mode(panel);
+		panel->hbm_enabled = false;
+		panel->skip_dimmingon = STATE_DIM_RESTORE;
+		break;
+	case DISPPARAM_DC_ON:
+		panel->dc_enable = true;
+		if (panel->last_bl_lvl)
+			dsi_panel_set_backlight(panel, panel->last_bl_lvl);
+		break;
+	case DISPPARAM_DC_OFF:
+		panel->dc_enable = false;
+		if (panel->last_bl_lvl)
+			dsi_panel_set_backlight(panel, panel->last_bl_lvl);
 		break;
 	case DISPPARAM_BC_120HZ:
 		mutex_lock(&panel->panel_lock);
@@ -4912,8 +5035,29 @@ int panel_disp_param_send(struct dsi_panel *panel, int param)
 		mutex_unlock(&panel->panel_lock);
 		break;
 	default:
-		pr_debug("unsupported legacy disp_param group 0x%x (param=0x%x)\n",
-			 group, param);
+		break;
+	}
+
+	group = param & 0x00F00000;
+	if (group == DISPPARAM_CRC_OFF) {
+		mutex_lock(&panel->panel_lock);
+		rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_DISP_CRC_OFF);
+		mutex_unlock(&panel->panel_lock);
+	}
+
+	group = param & 0x0F000000;
+	switch (group) {
+	case DISPPARAM_FLAT_MODE_ON:
+		mutex_lock(&panel->panel_lock);
+		rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_DISP_FLAT_MODE_ON);
+		mutex_unlock(&panel->panel_lock);
+		break;
+	case DISPPARAM_FLAT_MODE_OFF:
+		mutex_lock(&panel->panel_lock);
+		rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_DISP_FLAT_MODE_OFF);
+		mutex_unlock(&panel->panel_lock);
+		break;
+	default:
 		break;
 	}
 
