@@ -326,19 +326,15 @@ static void dsi_bridge_disp_param_set(struct drm_bridge *bridge, int cmd)
 
 static ssize_t dsi_bridge_disp_param_get(struct drm_bridge *bridge, char *buf)
 {
-	struct dsi_bridge *c_bridge;
-	struct dsi_panel *panel;
-
 	if (!bridge || !buf)
 		return -EINVAL;
 
-	c_bridge = to_dsi_bridge(bridge);
-	if (!c_bridge || !c_bridge->display || !c_bridge->display->panel)
-		return -ENODEV;
-
-	panel = c_bridge->display->panel;
-	return scnprintf(buf, PAGE_SIZE, "0x%x\n",
-		panel->hbm_mode ? DISPPARAM_HBM_ON : DISPPARAM_HBM_OFF);
+	/*
+	 * The OEM ABI only returns payload after an explicit panel-read request.
+	 * Readback commands are not part of the Sweet HBM/DC compatibility path,
+	 * so report an empty payload rather than fabricating HBM state.
+	 */
+	return 0;
 }
 
 int dsi_bridge_disp_set_doze_backlight(struct drm_connector *connector,

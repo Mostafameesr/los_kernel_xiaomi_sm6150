@@ -254,6 +254,8 @@ struct dsi_panel {
 
 	bool doze_enabled;
 	enum dsi_doze_mode_type doze_mode;
+	u32 doze_hbm_brightness;
+	u32 doze_lbm_brightness;
 
 	/* Xiaomi Sweet legacy displayfeature state */
 	bool dispparam_enabled;

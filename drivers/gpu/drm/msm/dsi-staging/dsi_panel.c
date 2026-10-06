@@ -874,8 +874,8 @@ static bool dsi_panel_set_k6_dc_backlight(struct dsi_panel *panel, u32 bl_lvl)
 	int i, rc, crc_value;
 
 	if (!panel->k6_dc_flag || !panel->dc_enable || !bl_lvl ||
-	    bl_lvl >= panel->dc_threshold || !panel->cur_mode ||
-	    !panel->cur_mode->priv_info)
+	    bl_lvl >= panel->dc_threshold || panel->doze_enabled ||
+	    !panel->cur_mode || !panel->cur_mode->priv_info)
 		return false;
 
 	crc_value = DIV_ROUND_CLOSEST(5125 * bl_lvl + 49000, 10000);
@@ -3666,6 +3666,18 @@ static void dsi_panel_parse_xiaomi_legacy_config(struct dsi_panel *panel)
 		"qcom,mdss-dsi-panel-dc-threshold", &panel->dc_threshold);
 	if (rc)
 		panel->dc_threshold = 440;
+
+	rc = utils->read_u32(utils->data,
+		"mi,mdss-dsi-doze-hbm-brightness-value",
+		&panel->doze_hbm_brightness);
+	if (rc)
+		panel->doze_hbm_brightness = 0;
+
+	rc = utils->read_u32(utils->data,
+		"mi,mdss-dsi-doze-lbm-brightness-value",
+		&panel->doze_lbm_brightness);
+	if (rc)
+		panel->doze_lbm_brightness = 0;
 
 	panel->dc_enable = false;
 	panel->hbm_enabled = false;
