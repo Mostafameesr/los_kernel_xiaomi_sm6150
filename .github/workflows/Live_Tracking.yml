@@ -26,7 +26,7 @@ jobs:
           NEVER_DIE_ID: ${{ secrets.NEVER_DIE_ID }}
           BUILD_TIME: ${{ steps.time.outputs.build_time }}
         run: |
-          TEXT="🔨 AGNI REFORGE
+          TEXT="🔨 AGNI NEOM
           ━━━━━━━━━━━━━━━━━━━━
           <code>KSU-AOSP  ⏳  Waiting
           KSU-OEM   ⏳  Waiting
@@ -148,9 +148,9 @@ jobs:
               -H "Accept: application/vnd.github+json" \
               -H "X-GitHub-Api-Version: 2022-11-28" "$API")"
 
-            KSU="$(jq -c '.jobs[] | select(.name=="Reforging - KSU-AOSP")' <<< "$JOBS" | head -1)"
-            OEM="$(jq -c '.jobs[] | select(.name=="Reforging - KSU-OEM")' <<< "$JOBS" | head -1)"
-            NON="$(jq -c '.jobs[] | select(.name=="Reforging - Non-KSU")' <<< "$JOBS" | head -1)"
+            KSU="$(jq -c '.jobs[] | select(.name=="Neom - KSU-AOSP")' <<< "$JOBS" | head -1)"
+            OEM="$(jq -c '.jobs[] | select(.name=="Neom - KSU-OEM")' <<< "$JOBS" | head -1)"
+            NON="$(jq -c '.jobs[] | select(.name=="Neom - Non-KSU")' <<< "$JOBS" | head -1)"
 
             KSUS="$(step "$KSU")"
             OEMS="$(step "$OEM")"
@@ -161,7 +161,7 @@ jobs:
             NC="$(jq -r '.conclusion // empty' <<< "$NON")"
 
             if [ "$KC" = success ] && [ "$OC" = success ] && [ "$NC" = success ]; then
-              TEXT="🔨 AGNI REFORGE
+              TEXT="🔨 AGNI NEOM
           ━━━━━━━━━━━━━━━━━━━━
           <code>KSU-AOSP  ✅  Done
           KSU-OEM   ✅  Done
@@ -176,7 +176,7 @@ jobs:
           ✅ All builds completed successfully."
 
               KEYBOARD="$(jq -nc --arg url \
-                "https://sourceforge.net/projects/dirty-project/files/Reforge-Kernel/${BUILD_TIME}/" \
+                "https://sourceforge.net/projects/dirty-project/files/neom-Kernel/${BUILD_TIME}/" \
                 '{inline_keyboard:[[{"text":"📥 Download","url":$url}]]}')"
 
               update "$TEXT" "$KEYBOARD" || true
@@ -187,7 +187,7 @@ jobs:
               if [[ "$KC" =~ ^(failure|cancelled|timed_out)$ ]] ||
                  [[ "$OC" =~ ^(failure|cancelled|timed_out)$ ]] ||
                  [[ "$NC" =~ ^(failure|cancelled|timed_out)$ ]]; then
-                TEXT="🔨 AGNI REFORGE
+                TEXT="🔨 AGNI NEOM
           ━━━━━━━━━━━━━━━━━━━━
           <code>KSU-AOSP  ${KSUS}
           KSU-OEM   ${OEMS}
@@ -206,7 +206,7 @@ jobs:
               fi
             fi
 
-            TEXT="🔨 AGNI REFORGE
+            TEXT="🔨 AGNI NEOM
           ━━━━━━━━━━━━━━━━━━━━
           <code>KSU-AOSP  ${KSUS}
           KSU-OEM   ${OEMS}
@@ -221,8 +221,8 @@ jobs:
             sleep 7
           done
 
-  Reforging:
-    name: Reforging - ${{ matrix.build_type }}
+  Neom:
+    name: Neom - ${{ matrix.build_type }}
     runs-on: ubuntu-latest
     needs: tracker
     strategy:
@@ -309,19 +309,19 @@ jobs:
 
       - name: 📦 Prepare AnyKernel3
         run: |
-          git clone --depth=1 --branch reforge https://github.com/manipvlator/Anykernel3.git AnyKernel3
+          git clone --depth=1 --branch neom https://github.com/Mostafameesr/Anykernel3.git AnyKernel3
           cp out/arch/arm64/boot/{Image.gz,dtbo.img,dtb.img} AnyKernel3/
 
       - name: 🗜️ Create Flashable ZIP
         run: |
-          ZIP_NAME="reforge_${{ matrix.build_type }}-${{ github.ref_name }}-${BUILD_TIME}.zip"
+          ZIP_NAME="neom_${{ matrix.build_type }}-${{ github.ref_name }}-${BUILD_TIME}.zip"
           echo "ZIP_NAME=$ZIP_NAME" >> "$GITHUB_ENV"
           (cd AnyKernel3 && zip -r9 "../$ZIP_NAME" . -x ".git/*")
 
       - name: 📤 Upload ZIP Artifact
         uses: actions/upload-artifact@v7
         with:
-          name: reforge_${{ matrix.build_type }}-${{ github.ref_name }}-${{ env.BUILD_TIME }}
+          name: neom_${{ matrix.build_type }}-${{ github.ref_name }}-${{ env.BUILD_TIME }}
           path: AnyKernel3/*
 
       - name: 📤 Upload Defconfig Artifact
@@ -332,7 +332,7 @@ jobs:
 
       - name: 🚀 Upload ZIP to SourceForge
         run: |
-          BASE="/home/frs/project/${SOURCEFORGE_PROJECT}/Reforge-Kernel"
+          BASE="/home/frs/project/${SOURCEFORGE_PROJECT}/neom-Kernel"
           PATH_SF="${BASE}/${BUILD_TIME}"
 
           sftp -i ~/.ssh/sourceforge_actions -oBatchMode=yes -oStrictHostKeyChecking=yes \
@@ -352,12 +352,12 @@ jobs:
   final:
     name: Final
     runs-on: ubuntu-latest
-    needs: [tracker, Reforging, telegram-live]
+    needs: [tracker, Neom, telegram-live]
     if: always()
     steps:
       - name: 📊 Final Status
         run: |
-          echo "AGNI REFORGE FINAL STATUS"
+          echo "AGNI NEOM FINAL STATUS"
           echo "Tracker       : ${{ needs.tracker.result }}"
-          echo "Reforging     : ${{ needs.Reforging.result }}"
+          echo "Neom     : ${{ needs.Neom.result }}"
           echo "Telegram Live : ${{ needs.telegram-live.result }}"
