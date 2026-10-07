@@ -154,5 +154,12 @@ u64 dsi_drm_find_bit_clk_rate(void *display,
 int dsi_conn_prepare_commit(void *display,
 		struct msm_display_conn_params *params);
 
+/*
+ * Legacy Sweet doze bridge used by the HyperOS mi_disp compatibility layer.
+ * Sweet's old ABI uses 0/1/2/3 for invalid/HBM/LBM/to-normal.
+ */
+int dsi_bridge_disp_set_doze_backlight(struct drm_connector *connector,
+		int doze_backlight);
+
 
 #endif /* _DSI_DRM_H_ */

@@ -29,6 +29,7 @@
 #include "dsi_ctrl.h"
 #include "dsi_ctrl_hw.h"
 #include "dsi_drm.h"
+#include "mi_disp_compat.h"
 #include "dsi_clk.h"
 #include "dsi_pwr.h"
 #include "sde_dbg.h"
@@ -8226,16 +8227,35 @@ struct dsi_display *get_main_display(void) {
 
 static int __init dsi_display_register(void)
 {
+	int rc, compat_rc;
+
 	dsi_phy_drv_register();
 	dsi_ctrl_drv_register();
 
 	dsi_display_parse_boot_display_selection();
 
-	return platform_driver_register(&dsi_display_driver);
+	rc = platform_driver_register(&dsi_display_driver);
+	if (rc)
+		return rc;
+
+	/*
+	 * HyperOS displayfeature talks to Xiaomi's newer mi_disp character
+	 * device. Sweet predates that ABI, so expose only the compatibility
+	 * ioctls needed to bridge AOD/doze to the existing Sweet panel path.
+	 *
+	 * Do not make display registration depend on the compatibility node:
+	 * a node creation failure must never take the whole display stack down.
+	 */
+	compat_rc = mi_disp_compat_init();
+	if (compat_rc)
+		pr_warn("mi_disp compatibility init failed, rc=%d\n", compat_rc);
+
+	return 0;
 }
 
 static void __exit dsi_display_unregister(void)
 {
+	mi_disp_compat_deinit();
 	platform_driver_unregister(&dsi_display_driver);
 	dsi_ctrl_drv_unregister();
 	dsi_phy_drv_unregister();
