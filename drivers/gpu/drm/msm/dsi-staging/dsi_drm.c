@@ -343,6 +343,7 @@ int dsi_bridge_disp_set_doze_backlight(struct drm_connector *connector,
 	struct dsi_bridge *c_bridge;
 	struct dsi_display *display;
 	struct dsi_panel *panel;
+	enum dsi_doze_mode_type old_mode;
 	int rc = 0;
 
 	if (!connector || !connector->encoder || !connector->encoder->bridge)
@@ -360,14 +361,12 @@ int dsi_bridge_disp_set_doze_backlight(struct drm_connector *connector,
 	panel = display->panel;
 
 	mutex_lock(&panel->panel_lock);
-	display->drm_dev->doze_brightness = doze_backlight;
-
-	/*
-	 * Match Sweet's sysfs contract: keep the requested state even when the
-	 * panel is not ready yet, instead of failing the userspace write.
-	 */
-	if (!dsi_panel_initialized(panel))
+	if (doze_backlight != DOZE_BRIGHTNESS_INVALID &&
+	    !dsi_panel_initialized(panel)) {
+		rc = -EAGAIN;
 		goto out;
+	}
+	old_mode = panel->doze_mode;
 
 	switch (doze_backlight) {
 	case DOZE_BRIGHTNESS_INVALID:
@@ -385,11 +384,15 @@ int dsi_bridge_disp_set_doze_backlight(struct drm_connector *connector,
 		break;
 	case DOZE_BRIGHTNESS_TO_NORMAL:
 		rc = dsi_panel_set_doze_status(panel, false);
-		if (!rc)
-			display->drm_dev->doze_brightness =
-				DOZE_BRIGHTNESS_INVALID;
 		break;
 	}
+
+	if (!rc)
+		display->drm_dev->doze_brightness =
+			doze_backlight == DOZE_BRIGHTNESS_TO_NORMAL ?
+			DOZE_BRIGHTNESS_INVALID : doze_backlight;
+	else
+		panel->doze_mode = old_mode;
 
 out:
 	mutex_unlock(&panel->panel_lock);

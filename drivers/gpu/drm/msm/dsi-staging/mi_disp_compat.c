@@ -184,10 +184,6 @@ static int mi_disp_set_feature(struct mi_disp_feature_req *req)
 	if (req->feature_id >= DISP_FEATURE_MAX)
 		return -EINVAL;
 
-	mutex_lock(&mi_disp_lock);
-	mi_disp_feature_values[req->feature_id] = req->feature_val;
-	mutex_unlock(&mi_disp_lock);
-
 	switch (req->feature_id) {
 	case DISP_FEATURE_DOZE_BRIGHTNESS:
 		if (req->feature_val < 0)
@@ -223,6 +219,12 @@ static int mi_disp_set_feature(struct mi_disp_feature_req *req)
 		pr_debug("feature %u=%d cached\n",
 			 req->feature_id, req->feature_val);
 		break;
+	}
+
+	if (!rc && req->feature_id != DISP_FEATURE_DOZE_BRIGHTNESS) {
+		mutex_lock(&mi_disp_lock);
+		mi_disp_feature_values[req->feature_id] = req->feature_val;
+		mutex_unlock(&mi_disp_lock);
 	}
 
 	return rc;

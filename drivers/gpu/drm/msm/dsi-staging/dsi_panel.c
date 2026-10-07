@@ -808,15 +808,24 @@ int dsi_panel_update_doze(struct dsi_panel *panel) {
 }
 
 int dsi_panel_set_doze_status(struct dsi_panel *panel, bool status) {
+	bool old_status = panel->doze_enabled;
+	int rc;
+
 	if (panel->doze_enabled == status)
 		return 0;
 
 	panel->doze_enabled = status;
+	rc = dsi_panel_update_doze(panel);
+	if (rc)
+		panel->doze_enabled = old_status;
 
-	return dsi_panel_update_doze(panel);
+	return rc;
 }
 
 int dsi_panel_set_doze_mode(struct dsi_panel *panel, enum dsi_doze_mode_type mode) {
+	enum dsi_doze_mode_type old_mode = panel->doze_mode;
+	int rc;
+
 	if (panel->doze_mode == mode)
 		return 0;
 
@@ -825,7 +834,11 @@ int dsi_panel_set_doze_mode(struct dsi_panel *panel, enum dsi_doze_mode_type mod
 	if (!panel->doze_enabled)
 		return 0;
 
-	return dsi_panel_update_doze(panel);
+	rc = dsi_panel_update_doze(panel);
+	if (rc)
+		panel->doze_mode = old_mode;
+
+	return rc;
 }
 
 int dsi_panel_set_fod_hbm(struct dsi_panel *panel, bool status)
@@ -907,6 +920,28 @@ static bool dsi_panel_set_k6_dc_backlight(struct dsi_panel *panel, u32 bl_lvl)
 	return true;
 }
 
+static bool dsi_panel_hbm_controls_backlight(struct dsi_panel *panel)
+{
+	struct dsi_panel_cmd_set *set;
+	const u8 *tx_buf;
+	int i;
+
+	if (!panel->cur_mode || !panel->cur_mode->priv_info)
+		return true;
+
+	set = &panel->cur_mode->priv_info->cmd_sets[DSI_CMD_SET_DISP_HBM_ON];
+	if (!set->cmds || !set->count)
+		return true;
+
+	for (i = 0; i < set->count; i++) {
+		tx_buf = set->cmds[i].msg.tx_buf;
+		if (tx_buf && set->cmds[i].msg.tx_len && tx_buf[0] == 0x51)
+			return true;
+	}
+
+	return false;
+}
+
 int dsi_panel_set_backlight(struct dsi_panel *panel, u32 bl_lvl)
 {
 	int rc = 0;
@@ -936,12 +971,13 @@ int dsi_panel_set_backlight(struct dsi_panel *panel, u32 bl_lvl)
 		break;
 	case DSI_BACKLIGHT_DCS:
 		/*
-		 * Sweet K6 keeps normal 0x51 backlight writes out of the HBM
-		 * window.  The MIUI 14 panel commands toggle HBM through 0x53,
-		 * while the current normal level remains latched in 0x51.
+		 * Fixed-brightness HBM command sets own 0x51. Sweet's current
+		 * command set only toggles HBM through 0x53, so normal 0x51
+		 * writes must remain available for brightness updates.
 		 */
 		if (panel->f4_51_ctrl_flag && panel->hbm_enabled &&
-		    !panel->thermal_hbm_disabled && !panel->hbm_brightness) {
+		    !panel->thermal_hbm_disabled && !panel->hbm_brightness &&
+		    dsi_panel_hbm_controls_backlight(panel)) {
 			pr_debug("skip normal backlight %u while HBM is active\n",
 				 bl_lvl);
 		} else if (panel->oled_panel_video_mode && panel->doze_enabled) {
@@ -4436,9 +4472,11 @@ int dsi_panel_set_lp1(struct dsi_panel *panel)
 		dsi_pwr_panel_regulator_mode_set(&panel->power_info,
 			"ibb", REGULATOR_MODE_IDLE);
 	rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_LP1);
-	if (rc)
+	if (rc) {
 		pr_debug("[%s] failed to send DSI_CMD_SET_LP1 cmd, rc=%d\n",
 		       panel->name, rc);
+		goto exit;
+	}
 
 	rc = dsi_panel_set_doze_status(panel, true);
 	if (rc)
@@ -4462,9 +4500,11 @@ int dsi_panel_set_lp2(struct dsi_panel *panel)
 		goto exit;
 
 	rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_LP2);
-	if (rc)
+	if (rc) {
 		pr_debug("[%s] failed to send DSI_CMD_SET_LP2 cmd, rc=%d\n",
 		       panel->name, rc);
+		goto exit;
+	}
 
 	rc = dsi_panel_set_doze_status(panel, true);
 	if (rc)
@@ -4496,9 +4536,11 @@ int dsi_panel_set_nolp(struct dsi_panel *panel)
 		dsi_pwr_panel_regulator_mode_set(&panel->power_info,
 			"ibb", REGULATOR_MODE_NORMAL);
 	rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_NOLP);
-	if (rc)
+	if (rc) {
 		pr_debug("[%s] failed to send DSI_CMD_SET_NOLP cmd, rc=%d\n",
 		       panel->name, rc);
+		goto exit;
+	}
 
 	rc = dsi_panel_set_doze_status(panel, false);
 	if (rc)
