@@ -78,8 +78,7 @@ jobs:
 
       - name: 📂 Prepare AnyKernel3
         run: |
-          git clone --depth=1 --single-branch --branch neom https://github.com/Mostafameesr/Anykernel3.git AnyKernel3
-          sed -i 's/^kernel\.string=.*/kernel.string=neom/' AnyKernel3/anykernel.sh
+          git clone --depth=1 -b neom https://github.com/Mostafameesr/Anykernel3.git AnyKernel3
           cp out/arch/arm64/boot/{Image.gz,dtbo.img,dtb.img} AnyKernel3/
           (cd AnyKernel3 && zip -r "../neom_${{ matrix.build_type }}-${{ github.ref_name }}-${BUILD_TIME}.zip" . -x ".git/*")
 

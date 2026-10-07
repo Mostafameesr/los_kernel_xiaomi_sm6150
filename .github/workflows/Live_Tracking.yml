@@ -26,7 +26,7 @@ jobs:
           NEVER_DIE_ID: ${{ secrets.NEVER_DIE_ID }}
           BUILD_TIME: ${{ steps.time.outputs.build_time }}
         run: |
-          TEXT="🔨 NEOM
+          TEXT="🔨 AGNI NEOM
           ━━━━━━━━━━━━━━━━━━━━
           <code>KSU-AOSP  ⏳  Waiting
           KSU-OEM   ⏳  Waiting
@@ -161,7 +161,7 @@ jobs:
             NC="$(jq -r '.conclusion // empty' <<< "$NON")"
 
             if [ "$KC" = success ] && [ "$OC" = success ] && [ "$NC" = success ]; then
-              TEXT="🔨 NEOM
+              TEXT="🔨 AGNI NEOM
           ━━━━━━━━━━━━━━━━━━━━
           <code>KSU-AOSP  ✅  Done
           KSU-OEM   ✅  Done
@@ -176,7 +176,7 @@ jobs:
           ✅ All builds completed successfully."
 
               KEYBOARD="$(jq -nc --arg url \
-                "https://sourceforge.net/projects/dirty-project/files/neom-kernel/${BUILD_TIME}/" \
+                "https://sourceforge.net/projects/dirty-project/files/neom-Kernel/${BUILD_TIME}/" \
                 '{inline_keyboard:[[{"text":"📥 Download","url":$url}]]}')"
 
               update "$TEXT" "$KEYBOARD" || true
@@ -187,7 +187,7 @@ jobs:
               if [[ "$KC" =~ ^(failure|cancelled|timed_out)$ ]] ||
                  [[ "$OC" =~ ^(failure|cancelled|timed_out)$ ]] ||
                  [[ "$NC" =~ ^(failure|cancelled|timed_out)$ ]]; then
-                TEXT="🔨 NEOM
+                TEXT="🔨 AGNI NEOM
           ━━━━━━━━━━━━━━━━━━━━
           <code>KSU-AOSP  ${KSUS}
           KSU-OEM   ${OEMS}
@@ -206,7 +206,7 @@ jobs:
               fi
             fi
 
-            TEXT="🔨 NEOM
+            TEXT="🔨 AGNI NEOM
           ━━━━━━━━━━━━━━━━━━━━
           <code>KSU-AOSP  ${KSUS}
           KSU-OEM   ${OEMS}
@@ -309,8 +309,7 @@ jobs:
 
       - name: 📦 Prepare AnyKernel3
         run: |
-          git clone --depth=1 --single-branch --branch neom https://github.com/Mostafameesr/Anykernel3.git AnyKernel3
-          sed -i 's/^kernel\.string=.*/kernel.string=neom/' AnyKernel3/anykernel.sh
+          git clone --depth=1 --branch neom https://github.com/Mostafameesr/Anykernel3.git AnyKernel3
           cp out/arch/arm64/boot/{Image.gz,dtbo.img,dtb.img} AnyKernel3/
 
       - name: 🗜️ Create Flashable ZIP
@@ -333,7 +332,7 @@ jobs:
 
       - name: 🚀 Upload ZIP to SourceForge
         run: |
-          BASE="/home/frs/project/${SOURCEFORGE_PROJECT}/neom-kernel"
+          BASE="/home/frs/project/${SOURCEFORGE_PROJECT}/neom-Kernel"
           PATH_SF="${BASE}/${BUILD_TIME}"
 
           sftp -i ~/.ssh/sourceforge_actions -oBatchMode=yes -oStrictHostKeyChecking=yes \
@@ -358,7 +357,7 @@ jobs:
     steps:
       - name: 📊 Final Status
         run: |
-          echo "NEOM FINAL STATUS"
+          echo "AGNI NEOM FINAL STATUS"
           echo "Tracker       : ${{ needs.tracker.result }}"
           echo "Neom     : ${{ needs.Neom.result }}"
           echo "Telegram Live : ${{ needs.telegram-live.result }}"
