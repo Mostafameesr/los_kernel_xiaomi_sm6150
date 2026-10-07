@@ -1,10 +1,10 @@
-name: Reforging
+name: Neom
 
 on:
   workflow_dispatch:
 
 jobs:
-  Reforging:
+  Neom:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -78,12 +78,13 @@ jobs:
 
       - name: 📂 Prepare AnyKernel3
         run: |
-          git clone --depth=1 -b reforge https://github.com/manipvlator/Anykernel3.git AnyKernel3
+          git clone --depth=1 https://github.com/manipvlator/Anykernel3.git AnyKernel3
+          sed -i 's/^kernel\.string=.*/kernel.string=neom/' AnyKernel3/anykernel.sh
           cp out/arch/arm64/boot/{Image.gz,dtbo.img,dtb.img} AnyKernel3/
-          (cd AnyKernel3 && zip -r "../reforge_${{ matrix.build_type }}-${{ github.ref_name }}-${BUILD_TIME}.zip" . -x ".git/*")
+          (cd AnyKernel3 && zip -r "../neom_${{ matrix.build_type }}-${{ github.ref_name }}-${BUILD_TIME}.zip" . -x ".git/*")
 
       - name: 📤 Upload Flashable ZIP
         uses: actions/upload-artifact@v7
         with:
-          name: reforge_${{ matrix.build_type }}-${{ github.ref_name }}-${{ env.BUILD_TIME }}
+          name: neom_${{ matrix.build_type }}-${{ github.ref_name }}-${{ env.BUILD_TIME }}
           path: AnyKernel3/*
