@@ -173,11 +173,11 @@ jobs:
           Run: #${GITHUB_RUN_NUMBER}
 
           ━━━━━━━━━━━━━━━━━━━━
-          ✅ All builds completed successfully."
+          ✅ All builds completed and ZIPs sent to Telegram."
 
               KEYBOARD="$(jq -nc --arg url \
-                "https://sourceforge.net/projects/dirty-project/files/neom-Kernel/${BUILD_TIME}/" \
-                '{inline_keyboard:[[{"text":"📥 Download","url":$url}]]}')"
+                "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+                '{inline_keyboard:[[{"text":"📦 Build artifacts","url":$url}]]}')"
 
               update "$TEXT" "$KEYBOARD" || true
               exit 0
@@ -233,8 +233,6 @@ jobs:
     env:
       KBUILD_BUILD_USER: Manipulator
       KBUILD_BUILD_HOST: LineageOS
-      SOURCEFORGE_PROJECT: ${{ secrets.SOURCEFORGE_PROJECT }}
-      SOURCEFORGE_USERNAME: ${{ secrets.SOURCEFORGE_USERNAME }}
       BUILD_TIME: ${{ needs.tracker.outputs.build_time }}
 
     steps:
@@ -247,15 +245,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bc bison cpio flex aria2 lz4 libssl-dev patchelf rsync openssh-client zip unzip
-
-      - name: 🔐 Setup SourceForge SSH
-        env:
-          SOURCEFORGE_SSH_KEY: ${{ secrets.SOURCEFORGE_SSH_KEY }}
-        run: |
-          mkdir -p ~/.ssh
-          printf '%s\n' "$SOURCEFORGE_SSH_KEY" > ~/.ssh/sourceforge_actions
-          chmod 600 ~/.ssh/sourceforge_actions
-          ssh-keyscan -H frs.sourceforge.net >> ~/.ssh/known_hosts
 
       - name: ⚙️ Setup Neutron Clang
         run: |
@@ -322,7 +311,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: neom_${{ matrix.build_type }}-${{ github.ref_name }}-${{ env.BUILD_TIME }}
-          path: AnyKernel3/*
+          path: ${{ env.ZIP_NAME }}
 
       - name: 📤 Upload Defconfig Artifact
         uses: actions/upload-artifact@v7
@@ -330,24 +319,62 @@ jobs:
           name: configs-${{ matrix.build_type }}-${{ env.BUILD_TIME }}
           path: out/sweet_defconfig.txt
 
-      - name: 🚀 Upload ZIP to SourceForge
+      - name: 🚀 Send ZIP to Telegram
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          NEVER_DIE_ID: ${{ secrets.NEVER_DIE_ID }}
+          BUILD_TYPE: ${{ matrix.build_type }}
         run: |
-          BASE="/home/frs/project/${SOURCEFORGE_PROJECT}/neom-Kernel"
-          PATH_SF="${BASE}/${BUILD_TIME}"
+          set -euo pipefail
+          : "${TG_BOT_TOKEN:?Missing TG_BOT_TOKEN secret}"
+          : "${NEVER_DIE_ID:?Missing NEVER_DIE_ID secret}"
+          : "${ZIP_NAME:?Missing ZIP_NAME}"
+          [ -s "$ZIP_NAME" ] || { echo "::error::Flashable ZIP is missing or empty."; exit 1; }
 
-          sftp -i ~/.ssh/sourceforge_actions -oBatchMode=yes -oStrictHostKeyChecking=yes \
-            "${SOURCEFORGE_USERNAME}@frs.sourceforge.net" <<EOF
-          -mkdir ${BASE}
-          -mkdir ${PATH_SF}
-          bye
-          EOF
+          SIZE="$(stat -c %s -- "$ZIP_NAME")"
+          if [ "$SIZE" -gt $((50 * 1024 * 1024)) ]; then
+            echo "::error::ZIP exceeds the Telegram Bot API 50 MB limit. Download the ZIP from this run's GitHub artifacts."
+            exit 1
+          fi
 
-          sftp -i ~/.ssh/sourceforge_actions -oBatchMode=yes -oStrictHostKeyChecking=yes \
-            "${SOURCEFORGE_USERNAME}@frs.sourceforge.net" <<EOF
-          cd ${PATH_SF}
-          put ${ZIP_NAME}
-          bye
-          EOF
+          CAPTION="$(printf 'neom %s\nBranch: %s\nBuild: %s\nCommit: %.12s\nRun: %s' \
+            "$BUILD_TYPE" "$GITHUB_REF_NAME" "$BUILD_TIME" "$GITHUB_SHA" "$GITHUB_RUN_NUMBER")"
+          RESPONSE="$(mktemp)"
+          trap 'rm -f "$RESPONSE"' EXIT
+
+          for ATTEMPT in 1 2 3; do
+            if ! curl --silent --show-error --connect-timeout 30 --max-time 600 \
+              --request POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
+              --form-string "chat_id=${NEVER_DIE_ID}" \
+              --form "document=@${ZIP_NAME};type=application/zip" \
+              --form-string "caption=${CAPTION}" \
+              --output "$RESPONSE"; then
+              echo "::error::Telegram upload failed due to a network or timeout error."
+              exit 1
+            fi
+
+            if ! jq -e 'type == "object"' "$RESPONSE" > /dev/null; then
+              echo "::error::Telegram returned an invalid API response."
+              exit 1
+            fi
+            if jq -e '.ok == true and .result.document.file_id != null' "$RESPONSE" > /dev/null; then
+              echo "Flashable ZIP delivered to Telegram: $ZIP_NAME"
+              exit 0
+            fi
+
+            CODE="$(jq -r '.error_code // 0' "$RESPONSE")"
+            if [ "$CODE" = 429 ] && [ "$ATTEMPT" -lt 3 ]; then
+              WAIT_SECONDS="$(jq -r '.parameters.retry_after // 5' "$RESPONSE")"
+              if [[ "$WAIT_SECONDS" =~ ^[0-9]+$ ]] && [ "$WAIT_SECONDS" -le 120 ]; then
+                echo "Telegram rate limit; retrying after ${WAIT_SECONDS}s."
+                sleep "$WAIT_SECONDS"
+                continue
+              fi
+            fi
+            DESCRIPTION="$(jq -r '.description // "Unknown Telegram API error"' "$RESPONSE")"
+            echo "::error::Telegram upload failed: $DESCRIPTION"
+            exit 1
+          done
 
   final:
     name: Final
