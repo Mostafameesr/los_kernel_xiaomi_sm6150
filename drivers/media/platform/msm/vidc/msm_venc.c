@@ -1835,6 +1835,7 @@ int msm_venc_s_ctrl(struct msm_vidc_inst *inst, struct v4l2_ctrl *ctrl)
 	case V4L2_CID_MPEG_VIDC_VIDEO_EXTRADATA: {
 		struct hal_buffer_requirements *buff_req_buffer = NULL;
 		int extra_idx = 0;
+		int extra_port;
 
 		property_id = HAL_PARAM_INDEX_EXTRADATA;
 		extra.index = msm_comm_get_hal_extradata_index(ctrl->val);
@@ -1845,21 +1846,27 @@ int msm_venc_s_ctrl(struct msm_vidc_inst *inst, struct v4l2_ctrl *ctrl)
 		case V4L2_MPEG_VIDC_EXTRADATA_ROI_QP:
 		case V4L2_MPEG_VIDC_EXTRADATA_HDR10PLUS_METADATA:
 		case V4L2_MPEG_VIDC_EXTRADATA_INPUT_CROP:
-			inst->bufq[OUTPUT_PORT].num_planes = 2;
+			extra_port = OUTPUT_PORT;
 			break;
 		case V4L2_MPEG_VIDC_EXTRADATA_LTR:
 		case V4L2_MPEG_VIDC_EXTRADATA_ENC_FRAME_QP:
 		case V4L2_MPEG_VIDC_EXTRADATA_ENC_DTS:
-			inst->bufq[CAPTURE_PORT].num_planes = 2;
+			extra_port = CAPTURE_PORT;
 			break;
 		default:
 			rc = -ENOTSUPP;
 			break;
 		}
+		if (rc)
+			break;
 
 		pdata = &extra;
 		rc = call_hfi_op(hdev, session_set_property,
 				(void *)inst->session, property_id, pdata);
+		if (rc) {
+			dprintk(VIDC_ERR, "Failed to enable extradata: %d\n", rc);
+			break;
+		}
 
 		rc = msm_comm_try_get_bufreqs(inst);
 		if (rc) {
@@ -1867,6 +1874,7 @@ int msm_venc_s_ctrl(struct msm_vidc_inst *inst, struct v4l2_ctrl *ctrl)
 				"Failed to get buffer requirements: %d\n", rc);
 			break;
 		}
+		inst->bufq[extra_port].num_planes = 2;
 
 		extra_idx = EXTRADATA_IDX(inst->bufq[OUTPUT_PORT].num_planes);
 		if (extra_idx && (extra_idx < VIDEO_MAX_PLANES)) {
