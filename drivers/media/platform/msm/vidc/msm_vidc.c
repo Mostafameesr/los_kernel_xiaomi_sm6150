@@ -526,7 +526,7 @@ int msm_vidc_qbuf(void *instance, struct v4l2_buffer *b)
 	struct msm_vidc_inst *inst = instance;
 	int rc = 0, i = 0;
 	struct buf_queue *q = NULL;
-	struct vidc_tag_data tag_data;
+	struct vidc_tag_data tag_data = {0};
 	enum v4l2_memory memory;
 	u32 cr = 0;
 
@@ -613,7 +613,7 @@ int msm_vidc_dqbuf(void *instance, struct v4l2_buffer *b)
 	struct msm_vidc_inst *inst = instance;
 	int rc = 0, i = 0;
 	struct buf_queue *q = NULL;
-	struct vidc_tag_data tag_data;
+	struct vidc_tag_data tag_data = {0};
 	enum v4l2_memory memory;
 
 	if (!inst || !b || !valid_v4l2_buffer(b, inst)) {
@@ -670,6 +670,12 @@ int msm_vidc_dqbuf(void *instance, struct v4l2_buffer *b)
 	} else {
 		b->m.planes[0].reserved[5] = 0;
 		b->m.planes[0].reserved[6] = 0;
+	}
+	if (memory == V4L2_MEMORY_DMABUF &&
+			inst->session_type == MSM_VIDC_ENCODER &&
+			b->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
+		b->m.planes[0].reserved[7] = tag_data.firmware_flags;
+		b->m.planes[0].reserved[8] = MSM_VIDC_DMABUF_FLAGS_MAGIC;
 	}
 
 	return rc;

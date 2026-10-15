@@ -159,12 +159,18 @@ struct vidc_input_cr_data {
 	u32 input_cr;
 };
 
+/* DMA-BUF encoder DQBUF: plane[0].reserved[7] carries original HFI flags,
+ * reserved[8] identifies this extension. USERPTR clients keep their ABI.
+ */
+#define MSM_VIDC_DMABUF_FLAGS_MAGIC 0x51433246
+
 struct vidc_tag_data {
 	struct list_head list;
 	u32 index;
 	u32 type;
 	u32 input_tag;
 	u32 output_tag;
+	u32 firmware_flags;
 };
 
 struct recon_buf {

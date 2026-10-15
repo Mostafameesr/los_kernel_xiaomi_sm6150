@@ -2547,7 +2547,7 @@ static void handle_ebd(enum hal_command_response cmd, void *data)
 	struct vb2_buffer *vb;
 	struct msm_vidc_inst *inst;
 	struct vidc_hal_ebd *empty_buf_done;
-	struct vidc_tag_data tag_data;
+	struct vidc_tag_data tag_data = {0};
 	u32 planes[VIDEO_MAX_PLANES] = {0};
 	u32 extra_idx = 0;
 
@@ -2685,7 +2685,7 @@ static void handle_fbd(enum hal_command_response cmd, void *data)
 	struct msm_vidc_inst *inst;
 	struct vb2_buffer *vb;
 	struct vidc_hal_fbd *fill_buf_done;
-	struct vidc_tag_data tag_data;
+	struct vidc_tag_data tag_data = {0};
 	enum hal_buffer buffer_type;
 	u64 time_usec = 0;
 	u32 planes[VIDEO_MAX_PLANES] = {0};
@@ -2761,6 +2761,7 @@ static void handle_fbd(enum hal_command_response cmd, void *data)
 	tag_data.input_tag = fill_buf_done->input_tag;
 	tag_data.output_tag = fill_buf_done->output_tag;
 	tag_data.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+	tag_data.firmware_flags = fill_buf_done->flags1;
 
 	msm_comm_store_tags(inst, &tag_data);
 
@@ -4279,7 +4280,7 @@ static void populate_frame_data(struct vidc_frame_data *data,
 	int extra_idx;
 	struct vb2_buffer *vb;
 	struct vb2_v4l2_buffer *vbuf;
-	struct vidc_tag_data tag_data;
+	struct vidc_tag_data tag_data = {0};
 
 	if (!inst || !mbuf || !data) {
 		dprintk(VIDC_ERR, "%s: invalid params %pK %pK %pK\n",
@@ -7164,6 +7165,7 @@ void msm_comm_store_tags(struct msm_vidc_inst *inst,
 				temp->type == tag_data->type) {
 			temp->input_tag = tag_data->input_tag;
 			temp->output_tag = tag_data->output_tag;
+			temp->firmware_flags = tag_data->firmware_flags;
 			found = true;
 			break;
 		}
@@ -7177,6 +7179,7 @@ void msm_comm_store_tags(struct msm_vidc_inst *inst,
 		}
 		pdata->input_tag = tag_data->input_tag;
 		pdata->output_tag = tag_data->output_tag;
+		pdata->firmware_flags = tag_data->firmware_flags;
 		pdata->index = tag_data->index;
 		pdata->type = tag_data->type;
 		list_add_tail(&pdata->list, &inst->buffer_tags.list);
@@ -7202,6 +7205,7 @@ bool msm_comm_fetch_tags(struct msm_vidc_inst *inst,
 				temp->type == tag_data->type) {
 			tag_data->input_tag = temp->input_tag;
 			tag_data->output_tag = temp->output_tag;
+			tag_data->firmware_flags = temp->firmware_flags;
 			mutex_unlock(&inst->buffer_tags.lock);
 			return true;
 		}
