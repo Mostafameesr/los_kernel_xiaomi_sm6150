@@ -445,8 +445,13 @@ int msm_vidc_reqbufs(void *instance, struct v4l2_requestbuffers *b)
 		b->memory = V4L2_MEMORY_USERPTR;
 	rc = vb2_reqbufs(&q->vb2_bufq, b);
 	b->memory = memory;
-	if (!rc)
+	if (!rc) {
 		q->client_memory = b->count ? memory : 0;
+		/* Modern codec clients use an empty OUTPUT buffer for EOS. */
+		q->vb2_bufq.allow_zero_bytesused =
+			memory == V4L2_MEMORY_DMABUF ||
+			!V4L2_TYPE_IS_OUTPUT(b->type);
+	}
 	mutex_unlock(&q->lock);
 
 	if (rc)
@@ -552,6 +557,11 @@ int msm_vidc_qbuf(void *instance, struct v4l2_buffer *b)
 			if (p->m.fd < 0 || !p->length ||
 					p->data_offset > p->length ||
 					p->bytesused > p->length) {
+				rc = -EINVAL;
+				goto unlock;
+			}
+			if (V4L2_TYPE_IS_OUTPUT(b->type) &&
+					p->bytesused < p->data_offset) {
 				rc = -EINVAL;
 				goto unlock;
 			}

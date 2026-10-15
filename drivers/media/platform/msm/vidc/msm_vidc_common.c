@@ -2410,6 +2410,8 @@ int msm_comm_vb2_buffer_done(struct msm_vidc_inst *inst,
 			vb2->planes[i].data_offset =
 				mbuf->vvb.vb2_buf.planes[i].data_offset;
 		}
+		if (inst->bufq[port].client_memory == V4L2_MEMORY_DMABUF)
+			vb2->planes[0].bytesused += vb2->planes[0].data_offset;
 		vb2_buffer_done(vb2, VB2_BUF_STATE_DONE);
 	} else {
 		dprintk(VIDC_ERR, "%s: port %d is not streaming\n",
@@ -2483,6 +2485,34 @@ static bool is_eos_buffer(struct msm_vidc_inst *inst, u32 device_addr)
 	mutex_unlock(&inst->eosbufs.lock);
 
 	return found;
+}
+
+/* msm_smem already includes the submitted offset in device_addr. Firmware
+ * completion offsets are relative to that address, whereas DMA-BUF clients
+ * address the complete allocation. Keep the legacy payload length internally
+ * for cache operations; include the absolute offset only at the vb2 boundary.
+ */
+static void msm_comm_dmabuf_done_offset(struct msm_vidc_inst *inst,
+		struct msm_vidc_buffer *mbuf)
+{
+	struct vb2_buffer *vb = &mbuf->vvb.vb2_buf;
+	u32 port = vb->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE ?
+		OUTPUT_PORT : CAPTURE_PORT;
+	u64 offset;
+
+	if (inst->bufq[port].client_memory != V4L2_MEMORY_DMABUF)
+		return;
+
+	offset = (u64)mbuf->smem[0].offset + vb->planes[0].data_offset;
+	if (offset > vb->planes[0].length ||
+			vb->planes[0].bytesused > vb->planes[0].length - offset) {
+		dprintk(VIDC_ERR, "invalid DMA-BUF firmware payload range\n");
+		mbuf->vvb.flags |= V4L2_BUF_FLAG_ERROR;
+		vb->planes[0].bytesused = 0;
+		vb->planes[0].data_offset = 0;
+		return;
+	}
+	vb->planes[0].data_offset = offset;
 }
 
 static void handle_ebd(enum hal_command_response cmd, void *data)
@@ -2562,6 +2592,7 @@ static void handle_ebd(enum hal_command_response cmd, void *data)
 
 	update_recon_stats(inst, &empty_buf_done->recon_stats);
 	msm_vidc_clear_freq_entry(inst, mbuf->smem[0].device_addr);
+	msm_comm_dmabuf_done_offset(inst, mbuf);
 	/*
 	 * dma cache operations need to be performed before dma_unmap
 	 * which is done inside msm_comm_put_vidc_buffer()
@@ -2740,6 +2771,7 @@ static void handle_fbd(enum hal_command_response cmd, void *data)
 	default:
 		break;
 	}
+	msm_comm_dmabuf_done_offset(inst, mbuf);
 
 	/*
 	 * dma cache operations need to be performed before dma_unmap
@@ -4260,6 +4292,16 @@ static void populate_frame_data(struct vidc_frame_data *data,
 	} else if (vb->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
 		data->buffer_type = msm_comm_get_hal_output_buffer(inst);
 	}
+	if (inst->bufq[vb->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE ?
+			OUTPUT_PORT : CAPTURE_PORT].client_memory ==
+			V4L2_MEMORY_DMABUF) {
+		/* The imported IOVA already points at data_offset. */
+		data->alloc_len -= vb->planes[0].data_offset;
+		if (vb->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
+			data->filled_len -= vb->planes[0].data_offset;
+			data->offset = 0;
+		}
+	}
 
 	tag_data.index = vb->index;
 	tag_data.type = vb->type;
@@ -4277,6 +4319,10 @@ static void populate_frame_data(struct vidc_frame_data *data,
 	if (extra_idx && extra_idx < VIDEO_MAX_PLANES) {
 		data->extradata_addr = mbuf->smem[extra_idx].device_addr;
 		data->extradata_size = vb->planes[extra_idx].length;
+		if (inst->bufq[vb->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE ?
+				OUTPUT_PORT : CAPTURE_PORT].client_memory ==
+				V4L2_MEMORY_DMABUF)
+			data->extradata_size -= vb->planes[extra_idx].data_offset;
 		data->flags |= HAL_BUFFERFLAG_EXTRADATA;
 	}
 }
@@ -6551,6 +6597,10 @@ int msm_comm_qbuf_cache_operations(struct msm_vidc_inst *inst,
 		}
 
 		if (!skip) {
+			if (!i && vb->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE &&
+					inst->bufq[OUTPUT_PORT].client_memory ==
+					V4L2_MEMORY_DMABUF)
+				size -= vb->planes[i].data_offset;
 			rc = msm_smem_cache_operations(mbuf->smem[i].dma_buf,
 					cache_op, offset, size);
 			if (rc)
