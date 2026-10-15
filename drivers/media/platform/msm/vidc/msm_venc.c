@@ -2275,19 +2275,55 @@ int msm_venc_s_ctrl(struct msm_vidc_inst *inst, struct v4l2_ctrl *ctrl)
 		pdata = &enable;
 		break;
 	}
-	case V4L2_CID_MPEG_VIDC_VIDEO_LTRCOUNT:
-	case V4L2_CID_MPEG_VIDC_VENC_PARAM_SAR_WIDTH:
-	case V4L2_CID_MPEG_VIDC_VENC_PARAM_SAR_HEIGHT:
-	case V4L2_CID_MPEG_VIDC_VIDEO_BLUR_WIDTH:
-	case V4L2_CID_MPEG_VIDC_VIDEO_BLUR_HEIGHT:
-	case V4L2_CID_MPEG_VIDC_VIDEO_LAYER_ID:
-	case V4L2_CID_MPEG_VIDC_VENC_PARAM_LAYER_BITRATE:
 	case V4L2_CID_MPEG_VIDC_VIDEO_I_FRAME_QP_MIN:
 	case V4L2_CID_MPEG_VIDC_VIDEO_P_FRAME_QP_MIN:
 	case V4L2_CID_MPEG_VIDC_VIDEO_B_FRAME_QP_MIN:
 	case V4L2_CID_MPEG_VIDC_VIDEO_I_FRAME_QP_MAX:
 	case V4L2_CID_MPEG_VIDC_VIDEO_P_FRAME_QP_MAX:
-	case V4L2_CID_MPEG_VIDC_VIDEO_B_FRAME_QP_MAX:
+	case V4L2_CID_MPEG_VIDC_VIDEO_B_FRAME_QP_MAX: {
+		struct hal_quantization_range range = {0};
+
+		/* Modern clients use scalar controls. Send a fully initialized
+		 * range, just as the legacy extended-control interface does.
+		 */
+		range.qpi_min = TRY_GET_CTRL(
+			V4L2_CID_MPEG_VIDC_VIDEO_I_FRAME_QP_MIN)->val;
+		range.qpp_min = TRY_GET_CTRL(
+			V4L2_CID_MPEG_VIDC_VIDEO_P_FRAME_QP_MIN)->val;
+		range.qpb_min = TRY_GET_CTRL(
+			V4L2_CID_MPEG_VIDC_VIDEO_B_FRAME_QP_MIN)->val;
+		range.qpi_max = TRY_GET_CTRL(
+			V4L2_CID_MPEG_VIDC_VIDEO_I_FRAME_QP_MAX)->val;
+		range.qpp_max = TRY_GET_CTRL(
+			V4L2_CID_MPEG_VIDC_VIDEO_P_FRAME_QP_MAX)->val;
+		range.qpb_max = TRY_GET_CTRL(
+			V4L2_CID_MPEG_VIDC_VIDEO_B_FRAME_QP_MAX)->val;
+		range.layer_id = MSM_VIDC_ALL_LAYER_ID;
+		rc = call_hfi_op(hdev, session_set_property,
+			(void *)inst->session, HAL_PARAM_VENC_SESSION_QP_RANGE,
+			&range);
+		break;
+	}
+	case V4L2_CID_MPEG_VIDC_VIDEO_LTRCOUNT: {
+		struct hal_ltr_mode mode = {0};
+
+		if (ctrl->val < 0 || (u32)ctrl->val > inst->capability.ltr_count.max) {
+			rc = -EINVAL;
+			break;
+		}
+		mode.count = ctrl->val;
+		mode.mode = HAL_LTR_MODE_MANUAL;
+		mode.trust_mode = 1;
+		rc = call_hfi_op(hdev, session_set_property,
+			(void *)inst->session, HAL_PARAM_VENC_LTRMODE, &mode);
+		break;
+	}
+	case V4L2_CID_MPEG_VIDC_VIDEO_BLUR_WIDTH:
+	case V4L2_CID_MPEG_VIDC_VIDEO_BLUR_HEIGHT:
+	case V4L2_CID_MPEG_VIDC_VENC_PARAM_SAR_WIDTH:
+	case V4L2_CID_MPEG_VIDC_VENC_PARAM_SAR_HEIGHT:
+	case V4L2_CID_MPEG_VIDC_VIDEO_LAYER_ID:
+	case V4L2_CID_MPEG_VIDC_VENC_PARAM_LAYER_BITRATE:
 	case V4L2_CID_MPEG_VIDC_VENC_HDR_INFO:
 	case V4L2_CID_MPEG_VIDC_VENC_RGB_PRIMARY_00:
 	case V4L2_CID_MPEG_VIDC_VENC_RGB_PRIMARY_01:

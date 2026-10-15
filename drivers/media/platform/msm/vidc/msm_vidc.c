@@ -372,11 +372,11 @@ int msm_vidc_g_ctrl(void *instance, struct v4l2_control *control)
 		return -EINVAL;
 
 	ctrl = v4l2_ctrl_find(&inst->ctrl_handler, control->id);
-	if (ctrl) {
-		rc = try_get_ctrl(inst, ctrl);
-		if (!rc)
-			control->value = ctrl->val;
-	}
+	if (!ctrl)
+		return -EINVAL;
+	rc = try_get_ctrl(inst, ctrl);
+	if (!rc)
+		control->value = ctrl->val;
 
 	return rc;
 }
