@@ -548,6 +548,7 @@ struct msm_vidc_buffer {
 	struct vb2_v4l2_buffer vvb;
 	enum msm_vidc_flags flags;
 	u32 output_tag;
+	u32 input_tag;
 };
 
 struct msm_vidc_cvp_buffer {

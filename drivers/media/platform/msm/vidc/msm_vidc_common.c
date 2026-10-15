@@ -2515,6 +2515,31 @@ static void msm_comm_dmabuf_done_offset(struct msm_vidc_inst *inst,
 	vb->planes[0].data_offset = offset;
 }
 
+static struct msm_vidc_buffer *msm_comm_get_input_buffer(
+		struct msm_vidc_inst *inst, u32 *planes, u32 input_tag)
+{
+	struct msm_vidc_buffer *mbuf, *found = NULL;
+
+	if (inst->bufq[OUTPUT_PORT].client_memory != V4L2_MEMORY_DMABUF)
+		return msm_comm_get_buffer_using_device_planes(inst,
+			V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, planes);
+
+	/* Multiple read-only inputs may share an allocation, including its
+	 * offset. Firmware echoes the submission tag as well as the address.
+	 */
+	mutex_lock(&inst->registeredbufs.lock);
+	list_for_each_entry(mbuf, &inst->registeredbufs.list, list) {
+		if (mbuf->input_tag == input_tag &&
+				msm_comm_compare_device_planes(mbuf,
+				V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, planes)) {
+			found = mbuf;
+			break;
+		}
+	}
+	mutex_unlock(&inst->registeredbufs.lock);
+	return found;
+}
+
 static void handle_ebd(enum hal_command_response cmd, void *data)
 {
 	struct msm_vidc_cb_data_done *response = data;
@@ -2549,8 +2574,8 @@ static void handle_ebd(enum hal_command_response cmd, void *data)
 	planes[0] = empty_buf_done->packet_buffer;
 	planes[1] = empty_buf_done->extra_data_buffer;
 
-	mbuf = msm_comm_get_buffer_using_device_planes(inst,
-			V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, planes);
+	mbuf = msm_comm_get_input_buffer(inst, planes,
+			empty_buf_done->input_tag);
 	if (!mbuf || !kref_get_mbuf(inst, mbuf)) {
 		dprintk(VIDC_ERR,
 			"%s: data_addr %x, extradata_addr %x not found\n",
@@ -6373,6 +6398,11 @@ bool msm_comm_compare_vb2_plane(struct msm_vidc_inst *inst,
 	}
 
 	vb = &mbuf->vvb.vb2_buf;
+	if (inst->bufq[OUTPUT_PORT].client_memory == V4L2_MEMORY_DMABUF &&
+			(vb->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE ||
+			vb2->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) &&
+			(vb->type != vb2->type || vb->index != vb2->index))
+		return false;
 	if (vb->planes[i].m.fd == vb2->planes[i].m.fd &&
 		vb->planes[i].length == vb2->planes[i].length) {
 		return true;
@@ -6684,12 +6714,22 @@ struct msm_vidc_buffer *msm_comm_get_vidc_buffer(struct msm_vidc_inst *inst,
 	struct vb2_buffer *vb;
 	unsigned long dma_planes[VB2_MAX_PLANES] = {0};
 	struct msm_vidc_buffer *mbuf = NULL;
+	struct vidc_tag_data tag_data = {0};
 	bool found = false;
+	bool dmabuf_input;
 	int i = 0, planes = 0;
 
 	if (!inst || !vb2) {
 		dprintk(VIDC_ERR, "%s: invalid params\n", __func__);
 		return NULL;
+	}
+	dmabuf_input = vb2->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE &&
+		inst->bufq[OUTPUT_PORT].client_memory == V4L2_MEMORY_DMABUF;
+	if (dmabuf_input) {
+		tag_data.type = vb2->type;
+		tag_data.index = vb2->index;
+		if (!msm_comm_fetch_tags(inst, &tag_data))
+			return ERR_PTR(-EINVAL);
 	}
 
 	for (planes = 0; planes < vb2->num_planes; planes++) {
@@ -6699,8 +6739,19 @@ struct msm_vidc_buffer *msm_comm_get_vidc_buffer(struct msm_vidc_inst *inst,
 		 */
 		dma_planes[planes] = (unsigned long)msm_smem_get_dma_buf(
 				vb2->planes[planes].m.fd);
-		if (!dma_planes[planes])
+		if (!dma_planes[planes]) {
+			rc = -EINVAL;
 			goto put_ref;
+		}
+		if (inst->bufq[vb2->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE ?
+				OUTPUT_PORT : CAPTURE_PORT].client_memory ==
+				V4L2_MEMORY_DMABUF &&
+				vb2->planes[planes].length >
+				((struct dma_buf *)dma_planes[planes])->size) {
+			msm_smem_put_dma_buf((struct dma_buf *)dma_planes[planes]);
+			rc = -EINVAL;
+			goto put_ref;
+		}
 	}
 
 	mutex_lock(&inst->registeredbufs.lock);
@@ -6710,7 +6761,30 @@ struct msm_vidc_buffer *msm_comm_get_vidc_buffer(struct msm_vidc_inst *inst,
 	 * should be treated as new buffer Search the list with fd so that
 	 * it will be treated as new msm_vidc_buffer.
 	 */
-	if (is_encode_session(inst) && vb2->type ==
+	if (dmabuf_input) {
+		list_for_each_entry(mbuf, &inst->registeredbufs.list, list) {
+			struct vb2_buffer *queued = &mbuf->vvb.vb2_buf;
+
+			if (queued->type != vb2->type ||
+					queued->num_planes != vb2->num_planes ||
+					!msm_comm_compare_dma_planes(inst, mbuf, dma_planes))
+				continue;
+			if (queued->index == vb2->index) {
+				found = true;
+				break;
+			}
+			/* Identical addresses and tags cannot identify an EBD.
+			 * Reject the ambiguous request instead of completing a
+			 * different vb2 index. The bridge supplies unique tags.
+			 */
+			if (mbuf->input_tag == tag_data.input_tag &&
+					mbuf->smem[0].offset == vb2->planes[0].data_offset) {
+				rc = -EINVAL;
+				mutex_unlock(&inst->registeredbufs.lock);
+				goto put_ref;
+			}
+		}
+	} else if (is_encode_session(inst) && vb2->type ==
 			V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
 		list_for_each_entry(mbuf, &inst->registeredbufs.list, list) {
 			if (msm_comm_compare_vb2_planes(inst, mbuf, vb2)) {
@@ -6745,6 +6819,8 @@ struct msm_vidc_buffer *msm_comm_get_vidc_buffer(struct msm_vidc_inst *inst,
 
 	vbuf = to_vb2_v4l2_buffer(vb2);
 	memcpy(&mbuf->vvb, vbuf, sizeof(struct vb2_v4l2_buffer));
+	if (dmabuf_input)
+		mbuf->input_tag = tag_data.input_tag;
 	vb = &mbuf->vvb.vb2_buf;
 
 	for (i = 0; i < vb->num_planes; i++) {
@@ -6768,7 +6844,7 @@ struct msm_vidc_buffer *msm_comm_get_vidc_buffer(struct msm_vidc_inst *inst,
 	msm_comm_qbuf_cache_operations(inst, mbuf);
 
 	/* special handling for decoder */
-	if (inst->session_type == MSM_VIDC_DECODER) {
+	if (inst->session_type == MSM_VIDC_DECODER && !dmabuf_input) {
 		if (found) {
 			rc = -EEXIST;
 		} else {
@@ -6817,6 +6893,8 @@ put_ref:
 	while (planes)
 		msm_smem_put_dma_buf((struct dma_buf *)dma_planes[--planes]);
 
+	if (rc && rc != -EEXIST)
+		return ERR_PTR(rc);
 	return rc ? ((rc == -EEXIST && !inst->batch.enable) ?
 			ERR_PTR(rc) : mbuf) : mbuf;
 }
