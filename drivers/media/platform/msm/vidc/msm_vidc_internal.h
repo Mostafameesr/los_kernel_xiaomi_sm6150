@@ -325,6 +325,7 @@ struct session_prop {
 struct buf_queue {
 	struct vb2_queue vb2_bufq;
 	struct mutex lock;
+	enum v4l2_memory client_memory;
 	unsigned int plane_sizes[VB2_MAX_PLANES];
 	int num_planes;
 };

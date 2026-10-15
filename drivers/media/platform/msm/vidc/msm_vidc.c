@@ -425,6 +425,7 @@ int msm_vidc_reqbufs(void *instance, struct v4l2_requestbuffers *b)
 {
 	struct msm_vidc_inst *inst = instance;
 	struct buf_queue *q = NULL;
+	enum v4l2_memory memory;
 	int rc = 0;
 
 	if (!inst || !b)
@@ -438,7 +439,14 @@ int msm_vidc_reqbufs(void *instance, struct v4l2_requestbuffers *b)
 	}
 
 	mutex_lock(&q->lock);
+	memory = b->memory;
+	/* VIDC imports fds through msm_smem, outside the vb2 allocator. */
+	if (memory == V4L2_MEMORY_DMABUF)
+		b->memory = V4L2_MEMORY_USERPTR;
 	rc = vb2_reqbufs(&q->vb2_bufq, b);
+	b->memory = memory;
+	if (!rc)
+		q->client_memory = b->count ? memory : 0;
 	mutex_unlock(&q->lock);
 
 	if (rc)
@@ -456,7 +464,8 @@ static bool valid_v4l2_buffer(struct v4l2_buffer *b,
 		b->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE ? OUTPUT_PORT :
 								MAX_PORT_NUM;
 
-	return port != MAX_PORT_NUM &&
+	return port != MAX_PORT_NUM && b->m.planes && b->length &&
+		b->length <= VIDEO_MAX_PLANES &&
 		inst->bufq[port].num_planes == b->length;
 }
 
@@ -513,6 +522,7 @@ int msm_vidc_qbuf(void *instance, struct v4l2_buffer *b)
 	int rc = 0, i = 0;
 	struct buf_queue *q = NULL;
 	struct vidc_tag_data tag_data;
+	enum v4l2_memory memory;
 	u32 cr = 0;
 
 	if (!inst || !inst->core || !b || !valid_v4l2_buffer(b, inst)) {
@@ -529,10 +539,33 @@ int msm_vidc_qbuf(void *instance, struct v4l2_buffer *b)
 	}
 	mutex_lock(&q->lock);
 
+	memory = b->memory;
+	if (memory == V4L2_MEMORY_DMABUF ||
+			q->client_memory == V4L2_MEMORY_DMABUF) {
+		if (memory != q->client_memory) {
+			rc = -EINVAL;
+			goto unlock;
+		}
+		for (i = 0; i < b->length; i++) {
+			struct v4l2_plane *p = &b->m.planes[i];
 
-	for (i = 0; i < b->length; i++) {
-		b->m.planes[i].m.fd = b->m.planes[i].reserved[0];
-		b->m.planes[i].data_offset = b->m.planes[i].reserved[1];
+			if (p->m.fd < 0 || !p->length ||
+					p->data_offset > p->length ||
+					p->bytesused > p->length) {
+				rc = -EINVAL;
+				goto unlock;
+			}
+		}
+		for (i = 0; i < b->length; i++)
+			b->m.planes[i].m.userptr =
+				(unsigned long)b->m.planes[i].m.fd;
+		b->memory = V4L2_MEMORY_USERPTR;
+	} else {
+		for (i = 0; i < b->length; i++) {
+			b->m.planes[i].m.fd = b->m.planes[i].reserved[0];
+			b->m.planes[i].data_offset =
+				b->m.planes[i].reserved[1];
+		}
 	}
 
 	/* Compression ratio is valid only for Encoder YUV buffers. */
@@ -555,9 +588,11 @@ int msm_vidc_qbuf(void *instance, struct v4l2_buffer *b)
 	msm_comm_store_tags(inst, &tag_data);
 
 	rc = vb2_qbuf(&q->vb2_bufq, b);
+	b->memory = memory;
 	if (rc)
 		dprintk(VIDC_ERR, "Failed to qbuf, %d\n", rc);
 
+unlock:
 	mutex_unlock(&q->lock);
 	return rc;
 }
@@ -569,6 +604,7 @@ int msm_vidc_dqbuf(void *instance, struct v4l2_buffer *b)
 	int rc = 0, i = 0;
 	struct buf_queue *q = NULL;
 	struct vidc_tag_data tag_data;
+	enum v4l2_memory memory;
 
 	if (!inst || !b || !valid_v4l2_buffer(b, inst)) {
 		dprintk(VIDC_ERR, "%s: invalid params, inst %pK\n",
@@ -584,7 +620,17 @@ int msm_vidc_dqbuf(void *instance, struct v4l2_buffer *b)
 	}
 
 	mutex_lock(&q->lock);
+	memory = b->memory;
+	if (memory == V4L2_MEMORY_DMABUF ||
+			q->client_memory == V4L2_MEMORY_DMABUF) {
+		if (memory != q->client_memory) {
+			mutex_unlock(&q->lock);
+			return -EINVAL;
+		}
+		b->memory = V4L2_MEMORY_USERPTR;
+	}
 	rc = vb2_dqbuf(&q->vb2_bufq, b, true);
+	b->memory = memory;
 	mutex_unlock(&q->lock);
 	if (rc == -EAGAIN) {
 		return rc;
