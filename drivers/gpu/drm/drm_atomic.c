@@ -36,6 +36,10 @@
 
 #include "drm_crtc_internal.h"
 
+#ifdef CONFIG_KPROFILES
+extern int kp_active_mode(void);
+#endif
+
 void __drm_crtc_commit_free(struct kref *kref)
 {
 	struct drm_crtc_commit *commit =
@@ -2250,8 +2254,35 @@ int drm_mode_atomic_ioctl(struct drm_device *dev,
 		return -EINVAL;
 
 	if (!(arg->flags & DRM_MODE_ATOMIC_TEST_ONLY)) {
+#ifdef CONFIG_KPROFILES
+		switch (kp_active_mode()) {
+		case 0:
+		case 3:
+			/*
+			 * Disabled and Performance keep the stock
+			 * always-boost policy.
+			 */
+			cpu_input_boost_kick();
+			devfreq_boost_kick(DEVFREQ_CPU_LLCC_DDR_BW);
+			break;
+		case 2:
+			/*
+			 * Balanced only boosts for commits shortly after
+			 * input, avoiding sustained boosts for idle animations.
+			 */
+			if (cpu_input_boost_within_input(3250))
+				cpu_input_boost_kick();
+			if (df_boost_within_input(3250))
+				devfreq_boost_kick(DEVFREQ_CPU_LLCC_DDR_BW);
+			break;
+		default:
+			/* Battery mode does not boost on display commits. */
+			break;
+		}
+#else
 		cpu_input_boost_kick();
 		devfreq_boost_kick(DEVFREQ_CPU_LLCC_DDR_BW);
+#endif
 	}
 
 	drm_modeset_acquire_init(&ctx, 0);
