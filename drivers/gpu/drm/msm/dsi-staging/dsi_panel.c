@@ -459,6 +459,14 @@ static int dsi_panel_power_on(struct dsi_panel *panel)
 		}
 	}
 
+	/*
+	 * Give the panel supplies time to settle before the reset line is
+	 * released and the first DCS commands are sent. Without this the
+	 * controller can start talking to a panel that is still powering up,
+	 * which shows up as a corrupt frame right after unlock.
+	 */
+	mdelay(12);
+
 	rc = dsi_panel_set_pinctrl_state(panel, true);
 	if (rc) {
 		pr_err("[%s] failed to set pinctrl, rc=%d\n", panel->name, rc);
@@ -520,6 +528,9 @@ static int dsi_panel_power_off(struct dsi_panel *panel)
 		pr_err("[%s] failed set pinctrl state, rc=%d\n", panel->name,
 		       rc);
 	}
+
+	/* Let the panel finish its power-down before the rails collapse. */
+	mdelay(20);
 
 #ifdef CONFIG_TOUCHSCREEN_TDDI_DBCLK
 	skip_disable_regulator = panel->is_tddi_flag && is_tp_doubleclick_enable();
