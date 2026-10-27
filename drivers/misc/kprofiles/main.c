@@ -64,8 +64,14 @@ static bool kp_override;
 static bool screen_on = true;
 #endif
 
-/* Keep automatic mode off until userspace explicitly enables it. */
-static bool auto_kp __read_mostly;
+/*
+ * Default to automatic mode when the kernel is built with Auto KProfiles
+ * support, matching the StriXotic personal branch. This keeps a screen-off
+ * device on Battery mode even before userspace has written the node, so a
+ * ROM without the KProfiles app still gets the power benefit. Userspace can
+ * still turn it off by writing N.
+ */
+static bool auto_kp __read_mostly = !IS_ENABLED(CONFIG_AUTO_KPROFILES_NONE);
 
 static unsigned int kp_mode = CONFIG_KP_DEFAULT_MODE;
 
