@@ -66,8 +66,6 @@ static bool screen_on = true;
 
 /* Keep automatic mode off until userspace explicitly enables it. */
 static bool auto_kp __read_mostly;
-module_param(auto_kp, bool, 0664);
-MODULE_PARM_DESC(auto_kp, "Enable/disable automatic kernel profile management");
 
 static unsigned int kp_mode = CONFIG_KP_DEFAULT_MODE;
 
@@ -87,6 +85,43 @@ DEFINE_SPINLOCK(kp_set_mode_lock);
 
 static void kp_trigger_mode_change_event(void);
 
+/*
+ * Notify consumers immediately when userspace toggles automatic mode. Without
+ * this, a screen-off battery override would only take effect on the next
+ * blank/unblank event.
+ */
+static int kp_auto_set(const char *val, const struct kernel_param *kp)
+{
+	bool new_value;
+	int ret;
+
+	ret = kstrtobool(val, &new_value);
+	if (ret)
+		return ret;
+
+	if (READ_ONCE(auto_kp) == new_value)
+		return 0;
+
+	WRITE_ONCE(auto_kp, new_value);
+	kp_trigger_mode_change_event();
+
+	return 0;
+}
+
+static int kp_auto_get(char *buf, const struct kernel_param *kp)
+{
+	return scnprintf(buf, PAGE_SIZE, "%c\n",
+			 READ_ONCE(auto_kp) ? 'Y' : 'N');
+}
+
+static const struct kernel_param_ops kp_auto_ops = {
+	.set = kp_auto_set,
+	.get = kp_auto_get,
+};
+
+module_param_cb(auto_kp, &kp_auto_ops, &auto_kp, 0664);
+MODULE_PARM_DESC(auto_kp, "Enable/disable automatic kernel profile management");
+
 /**
  * kp_set_mode_rollback - Change profile to a given mode for a specific duration
  * @level: The profile mode level to set (0-3)
@@ -101,13 +136,13 @@ static void kp_trigger_mode_change_event(void);
 void kp_set_mode_rollback(unsigned int level, unsigned int duration_ms)
 {
 #ifdef CONFIG_AUTO_KPROFILES
-	if (!screen_on) {
+	if (!READ_ONCE(screen_on)) {
 		kp_dbg("Screen is off, skipping mode change.\n");
 		return;
 	}
 #endif
 
-	if (!auto_kp) {
+	if (!READ_ONCE(auto_kp)) {
 		kp_dbg("Auto Kprofiles is disabled, skipping mode change.\n");
 		return;
 	}
@@ -115,14 +150,15 @@ void kp_set_mode_rollback(unsigned int level, unsigned int duration_ms)
 	mutex_lock(&kp_set_mode_rb_lock);
 	if (unlikely(level > 3)) {
 		kp_err("Invalid mode requested, skipping mode change.\n");
+		mutex_unlock(&kp_set_mode_rb_lock);
 		return;
 	}
 
 	kp_override_mode = level;
-	kp_override = true;
+	WRITE_ONCE(kp_override, true);
 	kp_trigger_mode_change_event();
 	msleep(duration_ms);
-	kp_override = false;
+	WRITE_ONCE(kp_override, false);
 	kp_trigger_mode_change_event();
 	mutex_unlock(&kp_set_mode_rb_lock);
 }
@@ -133,7 +169,7 @@ static __always_inline int __kp_set_mode(unsigned int level)
 	if (unlikely(level > 3))
 		return -EINVAL;
 
-	kp_mode = level;
+	WRITE_ONCE(kp_mode, level);
 	return 0;
 }
 
@@ -148,29 +184,34 @@ static __always_inline int __kp_set_mode(unsigned int level)
  */
 void kp_set_mode(unsigned int level)
 {
-	int ret = 0;
+	int ret;
 
 #ifdef CONFIG_AUTO_KPROFILES
-	if (!screen_on) {
+	if (!READ_ONCE(screen_on)) {
 		kp_dbg("Screen is off, skipping mode change.\n");
 		return;
 	}
 #endif
 
-	if (!auto_kp) {
+	if (!READ_ONCE(auto_kp)) {
 		kp_dbg("Auto Kprofiles is disabled, skipping mode change.\n");
 		return;
 	}
 
 	spin_lock(&kp_set_mode_lock);
 	ret = __kp_set_mode(level);
+	spin_unlock(&kp_set_mode_lock);
+
 	if (ret) {
 		kp_err("Invalid mode requested, skipping mode change.\n");
 		return;
 	}
 
+	/*
+	 * The mode-change chain is a blocking notifier and may sleep, so it
+	 * must never run while kp_set_mode_lock is held.
+	 */
 	kp_trigger_mode_change_event();
-	spin_unlock(&kp_set_mode_lock);
 }
 EXPORT_SYMBOL(kp_set_mode);
 
@@ -203,21 +244,28 @@ EXPORT_SYMBOL(kp_set_mode);
  */
 int kp_active_mode(void)
 {
+	unsigned int mode;
+
 #ifdef CONFIG_AUTO_KPROFILES
-	if (!screen_on && auto_kp)
+	if (!READ_ONCE(screen_on) && READ_ONCE(auto_kp))
 		return 1;
 #endif
 
-	if (kp_override)
-		return kp_override_mode;
+	if (READ_ONCE(kp_override))
+		return READ_ONCE(kp_override_mode);
 
-	if (unlikely(kp_mode > 3)) {
-		kp_mode = 0;
-		kp_trigger_mode_change_event();
+	mode = READ_ONCE(kp_mode);
+	if (unlikely(mode > 3)) {
+		/*
+		 * Do not call the blocking notifier here: this helper is used
+		 * from boost paths that may run in atomic context.
+		 */
+		WRITE_ONCE(kp_mode, 0);
 		kp_err("Invalid value passed, falling back to level 0\n");
+		return 0;
 	}
 
-	return kp_mode;
+	return mode;
 }
 EXPORT_SYMBOL(kp_active_mode);
 
@@ -279,15 +327,15 @@ static inline int kp_display_notifier_callback(struct notifier_block *self,
 		blank = *(int *)(evdata->data);
 		switch (blank) {
 		case KP_BLANK_POWERDOWN:
-			if (!screen_on)
+			if (!READ_ONCE(screen_on))
 				break;
-			screen_on = false;
+			WRITE_ONCE(screen_on, false);
 			kp_trigger_mode_change_event();
 			break;
 		case KP_BLANK_UNBLANK:
-			if (screen_on)
+			if (READ_ONCE(screen_on))
 				break;
-			screen_on = true;
+			WRITE_ONCE(screen_on, true);
 			kp_trigger_mode_change_event();
 			break;
 		default:
@@ -341,7 +389,7 @@ static inline void kp_unregister_display_notifier(void)
 static inline ssize_t kp_mode_show(struct kobject *kobj,
 				   struct kobj_attribute *attr, char *buf)
 {
-	return scnprintf(buf, PAGE_SIZE, "%u\n", kp_mode);
+	return scnprintf(buf, PAGE_SIZE, "%u\n", READ_ONCE(kp_mode));
 }
 
 static inline ssize_t kp_mode_store(struct kobject *kobj,
@@ -355,11 +403,17 @@ static inline ssize_t kp_mode_store(struct kobject *kobj,
 	if (ret)
 		return ret;
 
+	spin_lock(&kp_set_mode_lock);
 	ret = __kp_set_mode(new_mode);
+	spin_unlock(&kp_set_mode_lock);
+
 	if (ret) {
 		kp_err("User changed mode is invalid, skipping mode change.\n");
 		return ret;
 	}
+
+	/* Let notifier clients see the new mode right away. */
+	kp_trigger_mode_change_event();
 
 	return count;
 }
@@ -367,8 +421,33 @@ static inline ssize_t kp_mode_store(struct kobject *kobj,
 static struct kobj_attribute kp_mode_attribute =
 	__ATTR(kp_mode, 0664, kp_mode_show, kp_mode_store);
 
+static ssize_t kp_active_show(struct kobject *kobj,
+			      struct kobj_attribute *attr, char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "%u\n", kp_active_mode());
+}
+
+static struct kobj_attribute kp_active_attribute =
+	__ATTR(kp_active, 0444, kp_active_show, NULL);
+
+#ifdef CONFIG_AUTO_KPROFILES
+static ssize_t kp_screen_show(struct kobject *kobj,
+			      struct kobj_attribute *attr, char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "%u\n",
+			 READ_ONCE(screen_on) ? 1 : 0);
+}
+
+static struct kobj_attribute kp_screen_attribute =
+	__ATTR(kp_screen, 0444, kp_screen_show, NULL);
+#endif
+
 static struct attribute *kp_attrs[] = {
 	&kp_mode_attribute.attr,
+	&kp_active_attribute.attr,
+#ifdef CONFIG_AUTO_KPROFILES
+	&kp_screen_attribute.attr,
+#endif
 	NULL,
 };
 
