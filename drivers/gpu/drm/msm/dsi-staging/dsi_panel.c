@@ -18,6 +18,8 @@
 #include <linux/gpio.h>
 #include <linux/of_gpio.h>
 #include <linux/pwm.h>
+#include <linux/workqueue.h>
+#include <linux/jiffies.h>
 #include <video/mipi_display.h>
 
 #include "dsi_panel.h"
@@ -822,6 +824,8 @@ int dsi_panel_set_doze_status(struct dsi_panel *panel, bool status) {
 		return 0;
 
 	panel->doze_enabled = status;
+	if (status && dsi_panel_is_type_oled(panel))
+		panel->in_aod = true;
 
 	return dsi_panel_update_doze(panel);
 }
@@ -882,6 +886,21 @@ int dsi_panel_set_backlight(struct dsi_panel *panel, u32 bl_lvl)
 
 	pr_debug("backlight type:%d lvl:%d\n", bl->type, bl_lvl);
 
+	if (bl_lvl)
+		panel->last_bl_lvl = bl_lvl;
+
+	/*
+	 * The doze command is in charge of the DBV register while the panel is
+	 * in AOD. Writing the normal backlight here would both override the AOD
+	 * level and race with the resume of the video stream on wake, which
+	 * shows up as a brightness flash. Keep the level around instead and let
+	 * nolp_backlight_delayed_work() apply it after the panel left AOD.
+	 */
+	if (panel->in_aod && bl_lvl) {
+		pr_debug("in aod, skip set backlight: %d\n", bl_lvl);
+		return 0;
+	}
+
 	if (bl_lvl > 0)
 		bl_lvl = ea_panel_calc_backlight(bl_lvl < bl_dc_min ? bl_dc_min : bl_lvl);
 		
@@ -907,6 +926,29 @@ int dsi_panel_set_backlight(struct dsi_panel *panel, u32 bl_lvl)
 	}
 
 	return rc;
+}
+
+/*
+ * Wait a couple of frames after leaving AOD before touching the DBV register,
+ * so that the video stream is running again when the normal backlight level is
+ * programmed.
+ */
+#define NOLP_BL_DELAY_MS	30
+
+static void nolp_backlight_delayed_work(struct work_struct *work)
+{
+	struct dsi_panel *panel = container_of(work, struct dsi_panel,
+					       nolp_bl_delay_work.work);
+
+	mutex_lock(&panel->panel_lock);
+	panel->in_aod = false;
+
+	if (panel->panel_initialized && panel->last_bl_lvl) {
+		pr_debug("restore backlight level %u\n", panel->last_bl_lvl);
+		dsi_panel_set_backlight(panel, panel->last_bl_lvl);
+	}
+
+	mutex_unlock(&panel->panel_lock);
 }
 
 static u32 dsi_panel_get_brightness(struct dsi_backlight_config *bl)
@@ -3715,6 +3757,9 @@ struct dsi_panel *dsi_panel_get(struct device *parent,
 	panel->doze_mode = DSI_DOZE_LPM;
 	panel->doze_enabled = false;
 
+	INIT_DELAYED_WORK(&panel->nolp_bl_delay_work,
+			  nolp_backlight_delayed_work);
+
 	panel->power_mode = SDE_MODE_DPMS_OFF;
 
 	g_panel = panel;
@@ -4354,6 +4399,7 @@ exit:
 int dsi_panel_set_nolp(struct dsi_panel *panel)
 {
 	int rc = 0;
+	bool restore_backlight = false;
 
 	if (!panel) {
 		pr_err("invalid params\n");
@@ -4380,8 +4426,15 @@ int dsi_panel_set_nolp(struct dsi_panel *panel)
 	rc = dsi_panel_set_doze_status(panel, false);
 	if (rc)
 		pr_err("unable to set doze off\n");
+
+	restore_backlight = panel->in_aod && panel->last_bl_lvl;
 exit:
 	mutex_unlock(&panel->panel_lock);
+
+	if (restore_backlight)
+		schedule_delayed_work(&panel->nolp_bl_delay_work,
+				      msecs_to_jiffies(NOLP_BL_DELAY_MS));
+
 	return rc;
 }
 
@@ -4705,6 +4758,10 @@ int dsi_panel_enable(struct dsi_panel *panel)
 		return -EINVAL;
 	}
 
+	/* A pending AOD backlight restore must not race with a fresh enable */
+	cancel_delayed_work_sync(&panel->nolp_bl_delay_work);
+	panel->in_aod = false;
+
 	mutex_lock(&panel->panel_lock);
 
 	rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_ON);
@@ -4775,6 +4832,9 @@ int dsi_panel_disable(struct dsi_panel *panel)
 		pr_err("invalid params\n");
 		return -EINVAL;
 	}
+
+	cancel_delayed_work_sync(&panel->nolp_bl_delay_work);
+	panel->in_aod = false;
 
 	mutex_lock(&panel->panel_lock);
 
