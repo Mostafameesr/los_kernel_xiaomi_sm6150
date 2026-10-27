@@ -4699,15 +4699,11 @@ int dsi_panel_post_switch(struct dsi_panel *panel)
 int dsi_panel_enable(struct dsi_panel *panel)
 {
 	int rc = 0;
-	u32 count = 0;
 
 	if (!panel) {
 		pr_err("Invalid params\n");
 		return -EINVAL;
 	}
-
-	count = panel->cur_mode->priv_info->
-			cmd_sets[DSI_CMD_SET_DISP_BC_120HZ].count;
 
 	mutex_lock(&panel->panel_lock);
 
@@ -4717,14 +4713,6 @@ int dsi_panel_enable(struct dsi_panel *panel)
 		       panel->name, rc);
 	} else {
 		panel->panel_initialized = true;
-
-		if (count && (panel->cur_mode->timing.refresh_rate == 120)) {
-			rc = dsi_panel_tx_cmd_set(panel,
-					DSI_CMD_SET_DISP_BC_120HZ);
-			if (rc)
-				pr_err("[%s] failed to send DSI_CMD_SET_DISP_BC_120HZ cmd, rc=%d\n",
-				       panel->name, rc);
-		}
 	}
 	mutex_unlock(&panel->panel_lock);
 
