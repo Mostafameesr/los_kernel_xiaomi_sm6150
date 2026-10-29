@@ -601,7 +601,13 @@ static ssize_t proc_sys_call_handler(struct kiocb *iocb, struct iov_iter *iter,
 	error = -ENOMEM;
 	if (count >= KMALLOC_MAX_SIZE)
 		goto out;
-	kbuf = kzalloc(count + 1, GFP_KERNEL);
+	/*
+	 * The buffer is sized by the caller and reads can ask for far more
+	 * than a page, so a plain kmalloc here turns a harmless read of a
+	 * sysctl file into a high-order allocation that fails on a
+	 * fragmented system and floods the log with allocation failures.
+	 */
+	kbuf = kvmalloc(count + 1, GFP_KERNEL);
 	if (!kbuf)
 		goto out;
 
@@ -630,7 +636,7 @@ static ssize_t proc_sys_call_handler(struct kiocb *iocb, struct iov_iter *iter,
 
 	error = count;
 out_free_buf:
-	kfree(kbuf);
+	kvfree(kbuf);
 out:
 	sysctl_head_finish(head);
 
