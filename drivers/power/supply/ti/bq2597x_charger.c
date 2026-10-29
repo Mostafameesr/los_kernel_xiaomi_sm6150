@@ -2056,6 +2056,7 @@ static int bq2597x_charger_get_property(struct power_supply *psy,
 		break;
 	case POWER_SUPPLY_PROP_CP_VBAT_CALIBRATE:
 		val->intval = bq->vbat_calibrate;
+		break;
 	default:
 		return -EINVAL;
 
