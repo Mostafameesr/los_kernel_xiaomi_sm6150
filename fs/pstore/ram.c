@@ -984,8 +984,15 @@ static int __init ramoops_memreserve(char *p)
 	size = memparse(p, &p) & PAGE_MASK;
 	ramoops_data.mem_size = size;
 	ramoops_data.mem_address = 0xB0000000;
+	/*
+	 * Carve out a dump region as well, otherwise dump_oops is a no-op
+	 * and a panic leaves no record behind for pstore to pick up.  The
+	 * record size has to be a power of two and the three regions have
+	 * to fit inside the reserved area, so split it 1/4, 1/2, 1/4.
+	 */
+	ramoops_data.record_size = size / 4;
 	ramoops_data.console_size = size / 2;
-	ramoops_data.pmsg_size = size / 2;
+	ramoops_data.pmsg_size = size / 4;
 	ramoops_data.dump_oops = 1;
 
 	pr_info("msm_reserve_ramoops_memory addr=%llx,size=%lx\n",
