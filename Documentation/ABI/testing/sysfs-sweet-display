@@ -1,0 +1,46 @@
+What:           /sys/class/drm/cardN-DSI-N/disp_param
+Date:           October 2026
+Contact:        Sweet kernel maintainers
+Description:
+                Sweet vendor display HAL compatibility control. Hexadecimal
+                values (with or without 0x) select only these operations:
+                  0x10000:  request normal high brightness mode
+                  0xf0000: request normal brightness mode
+                  0xe00:    disable panel dimming
+                  0xf00:    enable panel dimming
+                  0xa00000: resend the saved backlight through the existing
+                            backlight/exposure adjustment path
+                  0xa00f00: resend backlight, then enable panel dimming
+
+                Reads return hbm=0 or hbm=1 for the successfully applied
+                HBM state. HBM requests made while the panel is off are
+                retained and sent on the next successful panel enable;
+                applied state remains 0 until that transfer succeeds.
+                Unsupported commands fail with EOPNOTSUPP. Dimming-on and
+                backlight-resend requests that conflict with AOD fail with
+                EBUSY. Dimming-on also fails with EBUSY during active HBM.
+                Hardware and clock errors are returned to the caller. A
+                cleanup failure never replaces an earlier command failure.
+                Kernel support does not replace Android init ownership or
+                SELinux rules. Existing vendor init supplies ownership.
+
+What:           /sys/class/drm/cardN-DSI-N/doze_backlight
+Date:           October 2026
+Contact:        Sweet kernel maintainers
+Description:
+                Legacy Sweet doze brightness ABI, distinct from doze_mode:
+                  1: send the panel DOZE_HBM command
+                  2: send the panel DOZE_LBM command
+                  3: leave doze and queue the existing normal-backlight
+                     restore, with its existing 30 ms delay
+                Other write values fail with EINVAL. A command request when
+                the panel is not initialized fails with EAGAIN. A missing
+                HBM/LBM command set fails with EOPNOTSUPP. State changes
+                follow successful command submission. Reads return 0 when
+                inactive, 1 for doze HBM, or 2 for doze LBM. Return-to-normal
+                completion is asynchronous; a new doze request supersedes
+                a previously queued backlight restore.
+
+                These nodes exist only for CONFIG_MACH_XIAOMI_SWEET.
+                They do not implement the modern mi_display character-device
+                ioctl or event ABI, and do not reinterpret its feature IDs.

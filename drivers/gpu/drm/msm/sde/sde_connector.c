@@ -1710,11 +1710,20 @@ static int sde_connector_init_debugfs(struct drm_connector *connector)
 
 static int sde_connector_late_register(struct drm_connector *connector)
 {
-	return sde_connector_init_debugfs(connector);
+	int rc;
+
+	rc = sde_connector_init_debugfs(connector);
+	if (rc)
+		return rc;
+	if (connector->connector_type == DRM_MODE_CONNECTOR_DSI)
+		return dsi_display_legacy_sysfs_init(connector);
+	return 0;
 }
 
 static void sde_connector_early_unregister(struct drm_connector *connector)
 {
+	if (connector->connector_type == DRM_MODE_CONNECTOR_DSI)
+		dsi_display_legacy_sysfs_deinit(connector);
 	/* debugfs under connector->debugfs are deleted by drm_debugfs */
 }
 

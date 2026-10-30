@@ -264,7 +264,8 @@ struct dsi_panel {
 	u32 last_bl_lvl;
 	struct delayed_work nolp_bl_delay_work;
 
-	int hbm_mode;
+	int hbm_mode; /* Requested mode, retained while the panel is off. */
+	bool hbm_applied;
 	bool resend_ea;
 
 	struct brightness_alpha_pair *fod_dim_lut;
@@ -402,6 +403,9 @@ int dsi_panel_set_fod_hbm(struct dsi_panel *panel, bool status);
 
 u32 dsi_panel_get_fod_dim_alpha(struct dsi_panel *panel);
 
-int dsi_panel_apply_hbm_mode(struct dsi_panel *panel);
+/* Caller must hold panel_lock and enable DSI core clocks. */
+int dsi_panel_set_hbm_mode(struct dsi_panel *panel, int mode);
+int dsi_panel_set_disp_param(struct dsi_panel *panel, int param);
+int dsi_panel_set_legacy_doze(struct dsi_panel *panel, int brightness);
 
 #endif /* _DSI_PANEL_H_ */

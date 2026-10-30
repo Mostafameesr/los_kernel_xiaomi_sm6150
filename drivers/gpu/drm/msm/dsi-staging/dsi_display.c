@@ -5126,15 +5126,17 @@ static ssize_t sysfs_doze_status_write(struct device *dev,
 
 	mutex_lock(&panel->panel_lock);
 
-	if (!dsi_panel_initialized(panel))
+	if (!dsi_panel_initialized(panel)) {
+		rc = -EAGAIN;
 		goto error;
+	}
 
-	dsi_panel_set_doze_status(panel, status);
+	rc = dsi_panel_set_doze_status(panel, status);
 
 error:
 	mutex_unlock(&panel->panel_lock);
 
-	return count;
+	return rc ? rc : count;
 }
 
 static ssize_t sysfs_doze_mode_read(struct device *dev,
@@ -5154,12 +5156,7 @@ static ssize_t sysfs_doze_mode_read(struct device *dev,
 
 	mutex_lock(&panel->panel_lock);
 
-	if (!dsi_panel_initialized(panel))
-		goto error;
-
 	doze_mode = panel->doze_mode;
-
-error:
 	mutex_unlock(&panel->panel_lock);
 
 	return snprintf(buf, PAGE_SIZE, "%d\n", doze_mode);
@@ -5193,10 +5190,13 @@ static ssize_t sysfs_doze_mode_write(struct device *dev,
 	panel = display->panel;
 
 	mutex_lock(&panel->panel_lock);
-	dsi_panel_set_doze_mode(panel, (enum dsi_doze_mode_type) mode);
+	if (!dsi_panel_initialized(panel) && panel->doze_enabled)
+		rc = -EAGAIN;
+	else
+		rc = dsi_panel_set_doze_mode(panel, mode);
 	mutex_unlock(&panel->panel_lock);
 
-	return count;
+	return rc ? rc : count;
 }
 
 static ssize_t sysfs_fod_ui_read(struct device *dev,
@@ -5216,59 +5216,176 @@ static ssize_t sysfs_fod_ui_read(struct device *dev,
 	return snprintf(buf, PAGE_SIZE, "%d\n", status);
 }
 
+/* Serialize feature commands with power, backlight and panel state changes. */
+static int dsi_display_apply_panel_setting(struct dsi_display *display,
+					   int (*setter)(struct dsi_panel *, int), int value)
+{
+	struct dsi_panel *panel;
+	int rc, clk_rc;
+
+	if (!display || !display->panel)
+		return -ENODEV;
+	panel = display->panel;
+
+	mutex_lock(&display->display_lock);
+	mutex_lock(&panel->panel_lock);
+	if (!dsi_panel_initialized(panel)) {
+		if (setter == dsi_panel_set_hbm_mode)
+			rc = setter(panel, value);
+		else if (setter == dsi_panel_set_disp_param &&
+			 (value == 0x10000 || value == 0xf0000))
+			rc = dsi_panel_set_hbm_mode(panel, value == 0x10000);
+		else
+			rc = -EAGAIN;
+		goto unlock;
+	}
+
+	rc = dsi_display_clk_ctrl(display->dsi_clk_handle,
+				  DSI_CORE_CLK, DSI_CLK_ON);
+	if (rc)
+		goto unlock;
+
+	rc = setter(panel, value);
+	clk_rc = dsi_display_clk_ctrl(display->dsi_clk_handle,
+				      DSI_CORE_CLK, DSI_CLK_OFF);
+	if (clk_rc)
+		pr_err("[%s] failed to release feature clocks, rc=%d\n",
+		       display->name, clk_rc);
+	/* Keep the original command failure even when clock cleanup also fails. */
+	if (!rc)
+		rc = clk_rc;
+unlock:
+	mutex_unlock(&panel->panel_lock);
+	mutex_unlock(&display->display_lock);
+	return rc;
+}
+
 static ssize_t sysfs_hbm_read(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct dsi_display *display = dev_get_drvdata(dev);
-	if (!display->panel)
-		return 0;
+	struct dsi_panel *panel;
+	int mode;
 
-	return scnprintf(buf, PAGE_SIZE, "%d\n", display->panel->hbm_mode);
+	if (!display || !display->panel)
+		return -ENODEV;
+	panel = display->panel;
+	mutex_lock(&panel->panel_lock);
+	mode = panel->hbm_applied;
+	mutex_unlock(&panel->panel_lock);
+	return scnprintf(buf, PAGE_SIZE, "%d\n", mode);
 }
 
 static ssize_t sysfs_hbm_write(struct device *dev,
-	    struct device_attribute *attr, const char *buf, size_t count)
+		struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct dsi_display *display = dev_get_drvdata(dev);
-	int ret, hbm_mode;
+	int rc, mode;
 
-	if (!display->panel)
+	rc = kstrtoint(buf, 10, &mode);
+	if (rc)
+		return rc;
+	if (mode != 0 && mode != 1)
 		return -EINVAL;
+	rc = dsi_display_apply_panel_setting(display,
+					     dsi_panel_set_hbm_mode, mode);
+	return rc ? rc : count;
+}
 
-	ret = kstrtoint(buf, 10, &hbm_mode);
-	if (ret) {
-		pr_err("kstrtoint failed. ret=%d\n", ret);
-		return ret;
-	}
+static struct dsi_display *dsi_legacy_display(struct device *dev)
+{
+	struct drm_connector *connector = dev_get_drvdata(dev);
 
-	mutex_lock(&display->display_lock);
+	if (!connector || connector->connector_type != DRM_MODE_CONNECTOR_DSI)
+		return NULL;
+	return sde_connector_get_display(connector);
+}
 
-	display->panel->hbm_mode = hbm_mode;
-	if (!dsi_panel_initialized(display->panel))
-		goto error;
+static ssize_t disp_param_store(struct device *dev,
+				struct device_attribute *attr, const char *buf, size_t count)
+{
+	int rc, param;
 
-	ret = dsi_display_clk_ctrl(display->dsi_clk_handle,
-			DSI_CORE_CLK, DSI_CLK_ON);
-	if (ret) {
-		pr_err("[%s] failed to enable DSI core clocks, rc=%d\n",
-		       display->name, ret);
-		goto error;
-	}
+	/* The HAL formats hexadecimal values, including the 0x prefix. */
+	rc = kstrtoint(buf, 16, &param);
+	if (rc)
+		return rc;
+	rc = dsi_display_apply_panel_setting(dsi_legacy_display(dev),
+					     dsi_panel_set_disp_param, param);
+	return rc ? rc : count;
+}
 
-	ret = dsi_panel_apply_hbm_mode(display->panel);
-	if (ret)
-		pr_err("unable to set hbm mode\n");
+static ssize_t doze_backlight_store(struct device *dev,
+				    struct device_attribute *attr, const char *buf, size_t count)
+{
+	int rc, brightness;
 
-	ret = dsi_display_clk_ctrl(display->dsi_clk_handle,
-			DSI_CORE_CLK, DSI_CLK_OFF);
-	if (ret) {
-		pr_err("[%s] failed to disable DSI core clocks, rc=%d\n",
-		       display->name, ret);
-		goto error;
-	}
-error:
-	mutex_unlock(&display->display_lock);
-	return ret == 0 ? count : ret;
+	rc = kstrtoint(buf, 0, &brightness);
+	if (rc)
+		return rc;
+	rc = dsi_display_apply_panel_setting(dsi_legacy_display(dev),
+					     dsi_panel_set_legacy_doze, brightness);
+	return rc ? rc : count;
+}
+
+static ssize_t doze_backlight_show(struct device *dev,
+				   struct device_attribute *attr, char *buf)
+{
+	struct dsi_display *display = dsi_legacy_display(dev);
+	struct dsi_panel *panel;
+	int brightness = 0;
+
+	if (!display || !display->panel)
+		return -ENODEV;
+	panel = display->panel;
+	mutex_lock(&panel->panel_lock);
+	if (panel->panel_initialized && panel->doze_enabled)
+		brightness = panel->doze_mode == DSI_DOZE_HBM ? 1 : 2;
+	mutex_unlock(&panel->panel_lock);
+	return scnprintf(buf, PAGE_SIZE, "%d\n", brightness);
+}
+
+/* O_RDWR is used by the vendor HAL even for a write-only parameter. */
+static ssize_t disp_param_show(struct device *dev,
+			       struct device_attribute *attr, char *buf)
+{
+	struct dsi_display *display = dsi_legacy_display(dev);
+	struct dsi_panel *panel;
+	int mode;
+
+	if (!display || !display->panel)
+		return -ENODEV;
+	panel = display->panel;
+	mutex_lock(&panel->panel_lock);
+	mode = panel->hbm_applied;
+	mutex_unlock(&panel->panel_lock);
+	return scnprintf(buf, PAGE_SIZE, "hbm=%d\n", mode);
+}
+
+static DEVICE_ATTR_RW(disp_param);
+static DEVICE_ATTR_RW(doze_backlight);
+
+static struct attribute *dsi_legacy_attrs[] = {
+	&dev_attr_disp_param.attr,
+	&dev_attr_doze_backlight.attr,
+	NULL,
+};
+
+static const struct attribute_group dsi_legacy_group = {
+	.attrs = dsi_legacy_attrs,
+};
+
+int dsi_display_legacy_sysfs_init(struct drm_connector *connector)
+{
+	if (!IS_ENABLED(CONFIG_MACH_XIAOMI_SWEET))
+		return 0;
+	return sysfs_create_group(&connector->kdev->kobj, &dsi_legacy_group);
+}
+
+void dsi_display_legacy_sysfs_deinit(struct drm_connector *connector)
+{
+	if (IS_ENABLED(CONFIG_MACH_XIAOMI_SWEET))
+		sysfs_remove_group(&connector->kdev->kobj, &dsi_legacy_group);
 }
 
 static DEVICE_ATTR(doze_status, 0644,

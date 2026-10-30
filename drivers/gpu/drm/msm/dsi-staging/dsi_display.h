@@ -719,4 +719,7 @@ struct dsi_display *get_main_display(void);
 
 void dsi_display_set_fod_ui(struct dsi_display *display, bool status);
 
+int dsi_display_legacy_sysfs_init(struct drm_connector *connector);
+void dsi_display_legacy_sysfs_deinit(struct drm_connector *connector);
+
 #endif /* _DSI_DISPLAY_H_ */
