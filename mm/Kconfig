@@ -1,3 +1,18 @@
+config NEOM_HOS_MEMORY_RESERVES
+	bool "Bounded PID-selected reserves for HyperOS ports"
+	depends on ARM64 && ION && !NUMA
+	default n
+	help
+	  Provide the mi_mempool/pids and reserve_pool/pid interfaces used
+	  by ported native services. The former selects a shrinkable 32 MiB
+	  order-0 reserve before direct reclaim; the latter selects separate
+	  shrinkable cached/uncached ION pools capped at 32 MiB in total.
+	  Pages are populated only after explicit PID registration. Secure
+	  ION allocations, DMA-constrained allocations, and allocation
+	  failure fallbacks retain the original allocator behavior.
+	  This is a 4.14 reserve implementation, not the complete Xiaomi
+	  GKI mi_mempool tuning or Smart Cache interface.
+
 config SELECT_MEMORY_MODEL
 	def_bool y
 	depends on ARCH_SELECT_MEMORY_MODEL

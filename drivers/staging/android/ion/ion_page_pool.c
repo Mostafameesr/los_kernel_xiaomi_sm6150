@@ -25,6 +25,7 @@
 #include <linux/sched/signal.h>
 
 #include "ion.h"
+#include "ion_reserve_pool.h"
 
 /*
  * We avoid atomic_long_t to minimize cache flushes at the cost of possible
@@ -63,6 +64,31 @@ static int ion_page_pool_add(struct ion_page_pool *pool, struct page *page)
 	mutex_unlock(&pool->mutex);
 	return 0;
 }
+
+#ifdef CONFIG_NEOM_HOS_MEMORY_RESERVES
+bool ion_page_pool_free_bounded(struct ion_page_pool *pool, struct page *page,
+				unsigned int limit)
+{
+	bool added = false;
+
+	mutex_lock(&pool->mutex);
+	if (pool->high_count + pool->low_count < limit) {
+		if (PageHighMem(page)) {
+			list_add_tail(&page->lru, &pool->high_items);
+			pool->high_count++;
+		} else {
+			list_add_tail(&page->lru, &pool->low_items);
+			pool->low_count++;
+		}
+		nr_total_pages += 1 << pool->order;
+		mod_node_page_state(page_pgdat(page), NR_KERNEL_MISC_RECLAIMABLE,
+				    1 << pool->order);
+		added = true;
+	}
+	mutex_unlock(&pool->mutex);
+	return added;
+}
+#endif
 
 static struct page *ion_page_pool_remove(struct ion_page_pool *pool, bool high)
 {

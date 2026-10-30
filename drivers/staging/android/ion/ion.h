@@ -378,6 +378,14 @@ size_t ion_heap_freelist_size(struct ion_heap *heap);
 
 struct ion_heap *ion_heap_create(struct ion_platform_heap *heap_data);
 
+#ifdef CONFIG_NEOM_HOS_MEMORY_RESERVES
+void ion_system_heap_reserve_init(struct ion_heap *heap);
+#else
+static inline void ion_system_heap_reserve_init(struct ion_heap *heap)
+{
+}
+#endif
+
 struct ion_heap *ion_system_heap_create(struct ion_platform_heap *unused);
 struct ion_heap *ion_system_contig_heap_create(struct ion_platform_heap *heap);
 
