@@ -42,7 +42,6 @@ obj-y			:= filemap.o mempool.o oom_kill.o \
 			   debug.o $(mmu-y) showmem.o vmpressure.o
 
 obj-y += init-mm.o
-obj-$(CONFIG_NEOM_HOS_MEMORY_RESERVES) += neom_pid.o neom_mempool.o
 
 ifdef CONFIG_NO_BOOTMEM
 	obj-y		+= nobootmem.o

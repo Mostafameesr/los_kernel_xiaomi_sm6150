@@ -27,13 +27,8 @@ static const unsigned int orders[] = {0};
 
 #define NUM_ORDERS ARRAY_SIZE(orders)
 
-struct ion_reserve_pool;
-
 struct ion_system_heap {
 	struct ion_heap heap;
-#ifdef CONFIG_NEOM_HOS_MEMORY_RESERVES
-	struct ion_reserve_pool *reserve;
-#endif
 	struct ion_page_pool *uncached_pools[MAX_ORDER];
 	struct ion_page_pool *cached_pools[MAX_ORDER];
 	struct ion_page_pool *secure_pools[VMID_LAST][MAX_ORDER];

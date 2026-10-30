@@ -331,10 +331,6 @@ static int msm_ion_probe(struct platform_device *pdev)
 
 		ion_device_add_heap(new_dev, heaps[i]);
 	}
-	/* Do not publish optional reserves from a partially failed probe. */
-	for (i = 0; i < num_heaps; i++)
-		if (!IS_ERR_OR_NULL(heaps[i]))
-			ion_system_heap_reserve_init(heaps[i]);
 	free_pdata(pdata);
 
 	platform_set_drvdata(pdev, new_dev);

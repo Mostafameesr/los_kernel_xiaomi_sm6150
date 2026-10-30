@@ -37,7 +37,6 @@
 #include <linux/sysctl.h>
 #include <linux/cpu.h>
 #include <linux/cpuset.h>
-#include <linux/neom_reserve.h>
 #include <linux/memory_hotplug.h>
 #include <linux/nodemask.h>
 #include <linux/vmalloc.h>
@@ -4245,11 +4244,6 @@ retry:
 	if (fatal_signal_pending(current) && !(gfp_mask & __GFP_NOFAIL) &&
 			(gfp_mask & __GFP_FS))
 		goto nopage;
-
-	/* Registered native tasks may consume an already-zeroed reserve page. */
-	page = neom_mempool_alloc(gfp_mask, order, ac->nodemask);
-	if (page)
-		goto got_pg;
 
 	/* Try direct reclaim and then allocating */
 	page = __alloc_pages_direct_reclaim(gfp_mask, order, alloc_flags, ac,

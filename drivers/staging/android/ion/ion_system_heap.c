@@ -21,7 +21,6 @@
 #include <linux/highmem.h>
 #include <linux/mm.h>
 #include <linux/scatterlist.h>
-#include <linux/sched/signal.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
@@ -31,7 +30,6 @@
 #include "ion_system_heap.h"
 #include "ion_system_secure_heap.h"
 #include "ion_secure_util.h"
-#include "ion_reserve_pool.h"
 
 static gfp_t high_order_gfp_flags = (GFP_HIGHUSER | __GFP_ZERO | __GFP_NOWARN |
 				     __GFP_NORETRY) & ~__GFP_RECLAIM;
@@ -81,11 +79,7 @@ static struct page *alloc_buffer_page(struct ion_system_heap *heap,
 	else
 		pool = heap->cached_pools[order_to_index(order)];
 
-	page = NULL;
-	if (vmid < 0 && *from_pool && !fatal_signal_pending(current))
-		page = ion_reserve_pool_alloc(heap, cached, order_to_index(order));
-	if (!page)
-		page = ion_page_pool_alloc(pool, from_pool);
+	page = ion_page_pool_alloc(pool, from_pool);
 
 	if (IS_ERR(page))
 		return page;
@@ -120,8 +114,7 @@ void free_buffer_page(struct ion_system_heap *heap,
 
 		if (buffer->private_flags & ION_PRIV_FLAG_SHRINKER_FREE)
 			ion_page_pool_free_immediate(pool, page);
-		else if (vmid >= 0 || !ion_reserve_pool_free(heap, page, cached,
-							     order_to_index(order)))
+		else
 			ion_page_pool_free(pool, page);
 
 		mod_node_page_state(page_pgdat(page), NR_UNRECLAIMABLE_PAGES,
@@ -480,12 +473,6 @@ static int ion_system_heap_shrink(struct ion_heap *heap, gfp_t gfp_mask,
 	struct ion_page_pool *pool;
 
 	sys_heap = container_of(heap, struct ion_system_heap, heap);
-	nr_total = ion_reserve_pool_shrink(sys_heap, gfp_mask, nr_to_scan);
-	if (nr_to_scan) {
-		if (nr_total >= nr_to_scan)
-			return nr_total;
-		nr_to_scan -= nr_total;
-	}
 
 	if (!nr_to_scan)
 		only_scan = 1;
@@ -704,16 +691,6 @@ destroy_secure_pools:
 	kfree(heap);
 	return ERR_PTR(-ENOMEM);
 }
-
-#ifdef CONFIG_NEOM_HOS_MEMORY_RESERVES
-/* Called after the platform heap-creation pass, with valid heap devices. */
-void ion_system_heap_reserve_init(struct ion_heap *heap)
-{
-	if (heap->type == ION_HEAP_TYPE_SYSTEM)
-		ion_reserve_pool_init(container_of(heap, struct ion_system_heap, heap),
-				      heap->priv);
-}
-#endif
 
 static int ion_system_contig_heap_allocate(struct ion_heap *heap,
 					   struct ion_buffer *buffer,

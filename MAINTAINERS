@@ -9366,16 +9366,6 @@ F:	Documentation/networking/s2io.txt
 F:	Documentation/networking/vxge.txt
 F:	drivers/net/ethernet/neterion/
 
-NEOM HYPEROS MEMORY RESERVES
-M:	Mostafameesr <133229718+Mostafameesr@users.noreply.github.com>
-S:	Maintained
-F:	Documentation/neom/
-F:	drivers/staging/android/ion/ion_reserve_pool.*
-F:	include/linux/neom_reserve.h
-F:	mm/neom_mempool.c
-F:	mm/neom_pid.c
-
-
 NETFILTER
 M:	Pablo Neira Ayuso <pablo@netfilter.org>
 M:	Jozsef Kadlecsik <kadlec@blackhole.kfki.hu>
