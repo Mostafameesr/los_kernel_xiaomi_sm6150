@@ -23,6 +23,7 @@
 #include <video/mipi_display.h>
 
 #include "dsi_panel.h"
+#include "mi_disp_sweet.h"
 #include "dsi_ctrl_hw.h"
 #include "dsi_parser.h"
 
@@ -545,6 +546,8 @@ static int dsi_panel_power_off(struct dsi_panel *panel)
 
 	return rc;
 }
+static int dsi_panel_set_dimming_mode(struct dsi_panel *panel, bool enable);
+
 static int dsi_panel_tx_cmd_set(struct dsi_panel *panel,
 				enum dsi_cmd_set_type type)
 {
@@ -834,6 +837,9 @@ int dsi_panel_set_doze_status(struct dsi_panel *panel, bool status)
 	else if (status && dsi_panel_is_type_oled(panel))
 		panel->in_aod = true;
 
+	if (!rc)
+		mi_disp_sweet_notify(panel, MI_DISP_EVENT_DOZE,
+			status ? (panel->doze_mode == DSI_DOZE_HBM ? 1 : 2) : 0);
 	return rc;
 }
 
@@ -854,6 +860,9 @@ int dsi_panel_set_doze_mode(struct dsi_panel *panel, enum dsi_doze_mode_type mod
 	rc = dsi_panel_update_doze(panel);
 	if (rc)
 		panel->doze_mode = old_mode;
+	else
+		mi_disp_sweet_notify(panel, MI_DISP_EVENT_DOZE,
+			mode == DSI_DOZE_HBM ? 1 : 2);
 
 	return rc;
 }
@@ -894,6 +903,7 @@ int dsi_panel_set_fod_hbm(struct dsi_panel *panel, bool status)
 int dsi_panel_set_backlight(struct dsi_panel *panel, u32 bl_lvl)
 {
 	int rc = 0;
+	int dim_rc = 0;
 	int bl_dc_min = panel->bl_config.bl_min_level * 2;
 	struct dsi_backlight_config *bl = &panel->bl_config;
 
@@ -921,8 +931,7 @@ int dsi_panel_set_backlight(struct dsi_panel *panel, u32 bl_lvl)
 		bl_lvl = ea_panel_calc_backlight(bl_lvl < bl_dc_min ? bl_dc_min : bl_lvl);
 
 	if (bl_lvl == 0)
-        dsi_panel_tx_cmd_set(panel,
-                DSI_CMD_SET_DISP_DIMMINGOFF);
+		dim_rc = dsi_panel_set_dimming_mode(panel, false);
 
 	switch (bl->type) {
 	case DSI_BACKLIGHT_WLED:
@@ -941,6 +950,22 @@ int dsi_panel_set_backlight(struct dsi_panel *panel, u32 bl_lvl)
 		rc = -ENOTSUPP;
 	}
 
+	if (rc >= 0) {
+		mi_disp_sweet_notify(panel, MI_DISP_EVENT_51_BRIGHTNESS, bl_lvl);
+		mi_disp_sweet_notify(panel, MI_DISP_EVENT_BACKLIGHT, bl->bl_level);
+		if (IS_ENABLED(CONFIG_MACH_XIAOMI_SWEET) && bl_lvl &&
+		    !panel->mi_layer_has_aod && panel->mi_pre_brightness) {
+			/* Official Xiaomi early-screen dimming restore delay. */
+			usleep_range(10000, 10010);
+			rc = dsi_panel_set_dimming_mode(panel, true);
+			if (!rc) {
+				panel->mi_pre_brightness = false;
+				panel->mi_dimming_blocked = false;
+			}
+		}
+		if (rc >= 0 && dim_rc)
+			rc = dim_rc;
+	}
 	return rc;
 }
 
@@ -4781,6 +4806,10 @@ int dsi_panel_post_switch(struct dsi_panel *panel)
 		pr_debug("[%s] failed to send DSI_CMD_SET_POST_TIMING_SWITCH cmds, rc=%d\n",
 		       panel->name, rc);
 
+	if (!rc && panel->cur_mode)
+		mi_disp_sweet_notify(panel, MI_DISP_EVENT_FPS,
+			panel->cur_mode->timing.refresh_rate);
+
 	mutex_unlock(&panel->panel_lock);
 	return rc;
 }
@@ -4809,9 +4838,15 @@ int dsi_panel_enable(struct dsi_panel *panel)
 		       panel->name, rc);
 	} else {
 		panel->panel_initialized = true;
+		panel->mi_dimming_state = 1;
 	}
 	if (!rc && panel->hbm_mode)
 		rc = dsi_panel_set_hbm_mode(panel, panel->hbm_mode);
+	if (!rc && panel->mi_pre_brightness)
+		rc = dsi_panel_set_mi_feature(panel, DISP_FEATURE_EARLY_SCREEN_STATUS, 1);
+	mi_disp_sweet_state_changed(panel);
+	if (!rc)
+		mi_disp_sweet_notify(panel, MI_DISP_EVENT_POWER, 0);
 
 	mutex_unlock(&panel->panel_lock);
 	return rc;
@@ -4907,6 +4942,9 @@ int dsi_panel_disable(struct dsi_panel *panel)
 	panel->hbm_applied = false;
 	panel->power_mode = SDE_MODE_DPMS_OFF;
 	panel->doze_enabled = false;
+	panel->mi_dimming_state = -1;
+	mi_disp_sweet_state_changed(panel);
+	mi_disp_sweet_notify(panel, MI_DISP_EVENT_POWER, 5);
 
 	mutex_unlock(&panel->panel_lock);
 	return rc;
@@ -5002,9 +5040,104 @@ int dsi_panel_set_hbm_mode(struct dsi_panel *panel, int mode)
 	if (!rc) {
 		panel->hbm_mode = mode;
 		panel->hbm_applied = mode;
+		panel->mi_dimming_state = 1;
+		if (panel->mi_dimming_blocked)
+			rc = dsi_panel_set_dimming_mode(panel, false);
+		mi_disp_sweet_notify(panel, MI_DISP_EVENT_HBM, mode);
 	}
 
 	return rc;
+}
+
+
+static int dsi_panel_set_dimming_mode(struct dsi_panel *panel, bool enable)
+{
+	enum dsi_cmd_set_type type = enable ? DSI_CMD_SET_DISP_DIMMINGON :
+		DSI_CMD_SET_DISP_DIMMINGOFF;
+	struct dsi_panel_cmd_set *set;
+	struct mipi_dsi_msg msg;
+	const u8 *original;
+	u8 payload[2];
+	ssize_t sent;
+	int rc;
+
+	if (!IS_ENABLED(CONFIG_MACH_XIAOMI_SWEET))
+		return dsi_panel_tx_cmd_set(panel, type);
+	if (!panel->panel_initialized || !panel->cur_mode || !panel->cur_mode->priv_info)
+		return -EAGAIN;
+	set = &panel->cur_mode->priv_info->cmd_sets[type];
+	if (!set->count || !set->cmds)
+		return -EOPNOTSUPP;
+	if (panel->hbm_applied) {
+		if (set->count != 1 || set->cmds[0].msg.tx_len != sizeof(payload))
+			return -EOPNOTSUPP;
+		original = set->cmds[0].msg.tx_buf;
+		if (!original || original[0] != 0x53)
+			return -EOPNOTSUPP;
+		/* Sweet HBM ON is 0xe8, OFF is 0x28: retain bits 7:6. */
+		payload[0] = original[0];
+		payload[1] = original[1] | 0xc0;
+		msg = set->cmds[0].msg;
+		msg.tx_buf = payload;
+		if (set->state == DSI_CMD_SET_STATE_LP)
+			msg.flags |= MIPI_DSI_MSG_USE_LPM;
+		if (set->cmds[0].last_command)
+			msg.flags |= MIPI_DSI_MSG_LASTCOMMAND;
+		sent = panel->host->ops->transfer(panel->host, &msg);
+		if (sent < 0)
+			return sent;
+		if (set->cmds[0].post_wait_ms)
+			usleep_range(set->cmds[0].post_wait_ms * 1000,
+				     set->cmds[0].post_wait_ms * 1000 + 10);
+		rc = 0;
+	} else {
+		rc = dsi_panel_tx_feature(panel, type);
+	}
+	if (!rc)
+		panel->mi_dimming_state = enable;
+	return rc;
+}
+
+int dsi_panel_set_mi_feature(struct dsi_panel *panel, u32 id, int value)
+{
+	int rc;
+
+	if (id == DISP_FEATURE_DOZE_BRIGHTNESS) {
+		if (value < 0 || value > 2)
+			return -EINVAL;
+		return dsi_panel_set_legacy_doze(panel, value ? value : 3);
+	}
+	if (value != 0 && value != 1)
+		return -EINVAL;
+	switch (id) {
+	case DISP_FEATURE_HBM:
+		return dsi_panel_set_hbm_mode(panel, value);
+	case DISP_FEATURE_DIMMING:
+		if (value && (panel->in_aod || panel->mi_dimming_blocked))
+			return -EBUSY;
+		return dsi_panel_set_dimming_mode(panel, value);
+	case DISP_FEATURE_FULLSCREEN_AOD_STATUS:
+		panel->mi_fullscreen_aod = value;
+		mi_disp_sweet_notify(panel, MI_DISP_EVENT_FULLSCREEN_AOD, value);
+		return 0;
+	case DISP_FEATURE_LAYER_HAS_AOD:
+		panel->mi_layer_has_aod = value;
+		return 0;
+	case DISP_FEATURE_EARLY_SCREEN_STATUS:
+		if (value) {
+			if (panel->panel_initialized) {
+				rc = dsi_panel_set_dimming_mode(panel, false);
+				if (rc)
+					return rc;
+				panel->mi_dimming_blocked = true;
+			}
+			panel->mi_pre_brightness = true;
+		}
+		panel->mi_early_screen = value;
+		return 0;
+	default:
+		return -EOPNOTSUPP;
+	}
 }
 
 /* Sweet's vendor ABI is hexadecimal, with independently encoded fields. */
@@ -5018,7 +5151,7 @@ int dsi_panel_set_disp_param(struct dsi_panel *panel, int param)
 	case 0xf0000:
 		return dsi_panel_set_hbm_mode(panel, 0);
 	case 0xe00:
-		return dsi_panel_tx_feature(panel, DSI_CMD_SET_DISP_DIMMINGOFF);
+		return dsi_panel_set_dimming_mode(panel, false);
 	case 0xf00:
 	case 0xa00f00:
 		/* 0x53/0x28 would override HBM; AOD owns the DBV register. */
@@ -5029,7 +5162,7 @@ int dsi_panel_set_disp_param(struct dsi_panel *panel, int param)
 			if (rc < 0)
 				return rc;
 		}
-		return dsi_panel_tx_feature(panel, DSI_CMD_SET_DISP_DIMMINGON);
+		return dsi_panel_set_mi_feature(panel, DISP_FEATURE_DIMMING, 1);
 	case 0xa00000:
 		if (panel->in_aod)
 			return -EBUSY;
@@ -5067,6 +5200,7 @@ int dsi_panel_set_legacy_doze(struct dsi_panel *panel, int brightness)
 	panel->doze_mode = mode;
 	panel->doze_enabled = true;
 	panel->in_aod = true;
+	mi_disp_sweet_notify(panel, MI_DISP_EVENT_DOZE, brightness);
 	return 0;
 }
 

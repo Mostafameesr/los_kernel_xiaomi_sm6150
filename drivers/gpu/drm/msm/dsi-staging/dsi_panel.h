@@ -197,6 +197,8 @@ struct dsi_read_config {
 	u8 rbuf[64];
 };
 
+struct mi_disp_sweet;
+
 struct dsi_panel {
 	const char *name;
 	const char *type;
@@ -266,6 +268,13 @@ struct dsi_panel {
 
 	int hbm_mode; /* Requested mode, retained while the panel is off. */
 	bool hbm_applied;
+	struct mi_disp_sweet *mi_disp;
+	bool mi_fullscreen_aod;
+	bool mi_layer_has_aod;
+	bool mi_early_screen;
+	bool mi_pre_brightness;
+	bool mi_dimming_blocked;
+	int mi_dimming_state;
 	bool resend_ea;
 
 	struct brightness_alpha_pair *fod_dim_lut;
@@ -407,5 +416,7 @@ u32 dsi_panel_get_fod_dim_alpha(struct dsi_panel *panel);
 int dsi_panel_set_hbm_mode(struct dsi_panel *panel, int mode);
 int dsi_panel_set_disp_param(struct dsi_panel *panel, int param);
 int dsi_panel_set_legacy_doze(struct dsi_panel *panel, int brightness);
+
+int dsi_panel_set_mi_feature(struct dsi_panel *panel, u32 id, int value);
 
 #endif /* _DSI_PANEL_H_ */

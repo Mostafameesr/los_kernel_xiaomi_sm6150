@@ -1,0 +1,57 @@
+What:           /dev/mi_display/disp_feature
+Date:           October 2026
+Contact:        Mostafameesr <133229718+Mostafameesr@users.noreply.github.com>
+Description:
+                Xiaomi display feature ABI for the primary Sweet DSI panel.
+                Enabled only by CONFIG_MACH_XIAOMI_SWEET. The device follows
+                connector registration and is removed before display unbind.
+                The UAPI is defined in include/uapi/drm/mi_disp.h; pointer
+                fields have the same offsets in 32-bit and 64-bit requests.
+
+                Supports VERSION, SET/GET_FEATURE, SET/GET_DOZE_BRIGHTNESS,
+                GET_FPS, REGISTER/DEREGISTER_EVENT, and SET_COUNT_INFO.
+                Only display 0 and flags BLOCK (0), NONBLOCK (1) are valid.
+                Features: dimming (0), HBM (1), doze (3), fullscreen AOD (35),
+                AOD layer (39), and early screen (40). Modern doze values are
+                0=normal, 1=high, 2=low; the legacy sysfs ABI uses 3=normal.
+
+                Dimming, HBM and doze use Sweet's panel command sets. Early
+                screen disables dimming, including a deferred request while
+                off. Positive backlight after the AOD layer is removed
+                restores dimming. Dimming changes preserve the HBM control
+                bits. The legacy dimming-on path observes the same temporary
+                block; combined DBV/dimming restore can complete the exit.
+                Fullscreen AOD is a reported composition status, not a new
+                panel low-power mode. Layer status gates dimming restoration.
+
+                NONBLOCK hardware requests use an ordered, bounded queue of
+                64 requests. Dimming and doze wait for panel initialization.
+                A successful enqueue is not confirmation of hardware success.
+                Completion/error counters are visible in the status attribute
+                of /sys/class/misc/disp_feature. Blocking calls return errors
+                directly. Unregister wakes and drains pending requests and
+                readers; open files remain valid until release, return HUP,
+                and reject subsequent supported ioctls with ENODEV.
+
+                Events: power (0), backlight (1), doze (3), FPS (4), DBV (6),
+                HBM (7), fullscreen AOD (15). Each record is 16 bytes: the
+                12-byte disp_event header and a u32 value. length includes
+                the header. Each open file has separate subscriptions and
+                256 event slots. Overflow drops new records and increments
+                dropped_events. Copy faults leave the current record queued.
+
+                SET_COUNT_INFO records SurfaceFlinger telemetry, including
+                its reported power status; it does not control panel power.
+                Only count types 0..5 are accepted. Type 1 carries a build
+                string of 1..99 bytes. Other types reject pointer payloads.
+
+                Unsupported features/events, including fingerprint/local HBM,
+                return EOPNOTSUPP; unknown ioctls return ENOTTY. No capability
+                is inferred from accepting metadata. Status getters describe
+                tracked command state, not a panel-register readback.
+
+                Android integration must supply DAC ownership and a matching
+                SELinux file context. Use a ueventd rule with mode 0660,
+                owner system, group graphics. The supplied vendor policy has
+                graphics_device permissions for SF/HWC/DisplayFeature; this
+                kernel change does not alter SELinux policy or enforcement.

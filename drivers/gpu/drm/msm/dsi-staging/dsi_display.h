@@ -722,4 +722,6 @@ void dsi_display_set_fod_ui(struct dsi_display *display, bool status);
 int dsi_display_legacy_sysfs_init(struct drm_connector *connector);
 void dsi_display_legacy_sysfs_deinit(struct drm_connector *connector);
 
+int dsi_display_set_mi_feature(struct dsi_display *display, u32 id, int value);
+
 #endif /* _DSI_DISPLAY_H_ */

@@ -26,6 +26,7 @@
 #include "msm_mmu.h"
 #include "dsi_display.h"
 #include "dsi_panel.h"
+#include "mi_disp_sweet.h"
 #include "dsi_ctrl.h"
 #include "dsi_ctrl_hw.h"
 #include "dsi_drm.h"
@@ -1107,8 +1108,15 @@ int dsi_display_set_power(struct drm_connector *connector,
 	pr_debug("Power mode transition from %d to %d %s",
 		 display->panel->power_mode, power_mode,
 		 rc ? "failed" : "successful");
-	if (!rc)
+	if (!rc) {
+		mutex_lock(&display->panel->panel_lock);
 		display->panel->power_mode = power_mode;
+		mi_disp_sweet_notify(display->panel, MI_DISP_EVENT_POWER,
+			power_mode == SDE_MODE_DPMS_ON ? 0 :
+			(power_mode == SDE_MODE_DPMS_LP1 ? 1 : 2));
+		mi_disp_sweet_state_changed(display->panel);
+		mutex_unlock(&display->panel->panel_lock);
+	}
 
 	return rc;
 }
@@ -5260,6 +5268,43 @@ unlock:
 	return rc;
 }
 
+
+int dsi_display_set_mi_feature(struct dsi_display *display, u32 id, int value)
+{
+	struct dsi_panel *panel;
+	bool clocked = false;
+	int rc, clk_rc;
+
+	if (!display || !display->panel)
+		return -ENODEV;
+	panel = display->panel;
+	mutex_lock(&display->display_lock);
+	mutex_lock(&panel->panel_lock);
+	if (id != DISP_FEATURE_FULLSCREEN_AOD_STATUS &&
+	    id != DISP_FEATURE_LAYER_HAS_AOD &&
+	    !(id == DISP_FEATURE_EARLY_SCREEN_STATUS && (!value || !panel->panel_initialized)) &&
+	    !(id == DISP_FEATURE_HBM && !panel->panel_initialized)) {
+		if (!panel->panel_initialized) {
+			rc = -EAGAIN;
+			goto unlock;
+		}
+		rc = dsi_display_clk_ctrl(display->dsi_clk_handle, DSI_CORE_CLK, DSI_CLK_ON);
+		if (rc)
+			goto unlock;
+		clocked = true;
+	}
+	rc = dsi_panel_set_mi_feature(panel, id, value);
+	if (clocked) {
+		clk_rc = dsi_display_clk_ctrl(display->dsi_clk_handle, DSI_CORE_CLK, DSI_CLK_OFF);
+		if (!rc)
+			rc = clk_rc;
+	}
+unlock:
+	mutex_unlock(&panel->panel_lock);
+	mutex_unlock(&display->display_lock);
+	return rc;
+}
+
 static ssize_t sysfs_hbm_read(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
@@ -5377,15 +5422,25 @@ static const struct attribute_group dsi_legacy_group = {
 
 int dsi_display_legacy_sysfs_init(struct drm_connector *connector)
 {
+	int rc;
+
 	if (!IS_ENABLED(CONFIG_MACH_XIAOMI_SWEET))
 		return 0;
-	return sysfs_create_group(&connector->kdev->kobj, &dsi_legacy_group);
+	rc = sysfs_create_group(&connector->kdev->kobj, &dsi_legacy_group);
+	if (rc)
+		return rc;
+	rc = mi_disp_sweet_register(sde_connector_get_display(connector));
+	if (rc)
+		sysfs_remove_group(&connector->kdev->kobj, &dsi_legacy_group);
+	return rc;
 }
 
 void dsi_display_legacy_sysfs_deinit(struct drm_connector *connector)
 {
-	if (IS_ENABLED(CONFIG_MACH_XIAOMI_SWEET))
+	if (IS_ENABLED(CONFIG_MACH_XIAOMI_SWEET)) {
+		mi_disp_sweet_unregister(sde_connector_get_display(connector));
 		sysfs_remove_group(&connector->kdev->kobj, &dsi_legacy_group);
+	}
 }
 
 static DEVICE_ATTR(doze_status, 0644,
@@ -5718,6 +5773,8 @@ static void dsi_display_unbind(struct device *dev,
 		pr_err("invalid display\n");
 		return;
 	}
+
+	mi_disp_sweet_unregister(display);
 
 	mutex_lock(&display->display_lock);
 
