@@ -2328,6 +2328,19 @@ static void retire_cmdobj(struct adreno_device *adreno_dev,
 	if (test_bit(CMDOBJ_PROFILE, &cmdobj->priv))
 		cmdobj_profile_ticks(adreno_dev, cmdobj, &start, &end);
 
+	/* The trace consumes drawobj/context, so emit it before destruction. */
+	if (trace_adreno_cmdbatch_retired_enabled()) {
+		struct adreno_ringbuffer *rb = ADRENO_DRAWOBJ_RB(drawobj);
+
+		/* A3xx cannot read CP_RB_RPTR after its clocks are disabled. */
+		trace_adreno_cmdbatch_retired(drawobj,
+					      adreno_dev->dispatcher.inflight,
+					      start, end, rb,
+					      adreno_is_a3xx(adreno_dev) ? 0 :
+					      adreno_get_rptr(rb),
+					      cmdobj->fault_recovery);
+	}
+
 	kgsl_drawobj_destroy(drawobj);
 }
 

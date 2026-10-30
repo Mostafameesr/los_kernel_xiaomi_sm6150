@@ -86,7 +86,7 @@ TRACE_EVENT(adreno_cmdbatch_submitted,
 		__entry->q_inflight = rb->dispatch_q.inflight;
 	),
 	TP_printk(
-		"ctx=%u ctx_prio=%d ts=%u inflight=%d flags=%s ticks=%lld time=%lu.%0lu rb_id=%d r/w=%x/%x, q_inflight=%d",
+		"ctx=%u ctx_prio=%d ts=%u inflight=%d flags=%s ticks=%lld time=%lu.%06lu rb_id=%d r/w=%x/%x, q_inflight=%d",
 			__entry->id, __entry->prio, __entry->timestamp,
 			__entry->inflight,
 			__entry->flags ? __print_flags(__entry->flags, "|",
@@ -123,6 +123,7 @@ TRACE_EVENT(adreno_cmdbatch_retired,
 		__entry->timestamp = drawobj->timestamp;
 		__entry->inflight = inflight;
 		__entry->recovery = fault_recovery;
+		__entry->fault_recovery = fault_recovery;
 		__entry->flags = drawobj->flags;
 		__entry->start = start;
 		__entry->retire = retire;
