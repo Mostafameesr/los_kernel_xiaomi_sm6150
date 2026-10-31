@@ -5248,6 +5248,10 @@ static int dsi_display_apply_panel_setting(struct dsi_display *display,
 		else if (setter == dsi_panel_set_disp_param &&
 			 (value == 0x10000 || value == 0xf0000))
 			rc = dsi_panel_set_hbm_mode(panel, value == 0x10000);
+		else if (setter == dsi_panel_set_legacy_doze && value == 3 &&
+			 !panel->doze_enabled && !panel->in_aod)
+			/* Panel disable already completed the requested exit. */
+			rc = setter(panel, value);
 		else
 			rc = -EAGAIN;
 		goto unlock;
@@ -5288,7 +5292,9 @@ int dsi_display_set_mi_feature(struct dsi_display *display, u32 id, int value)
 	if (id != DISP_FEATURE_FULLSCREEN_AOD_STATUS &&
 	    id != DISP_FEATURE_LAYER_HAS_AOD &&
 	    !(id == DISP_FEATURE_EARLY_SCREEN_STATUS && (!value || !panel->panel_initialized)) &&
-	    !(id == DISP_FEATURE_HBM && !panel->panel_initialized)) {
+	    !(id == DISP_FEATURE_HBM && !panel->panel_initialized) &&
+	    !(id == DISP_FEATURE_DOZE_BRIGHTNESS && !value &&
+	      !panel->panel_initialized && !panel->doze_enabled && !panel->in_aod)) {
 		if (!panel->panel_initialized) {
 			rc = -EAGAIN;
 			goto unlock;
