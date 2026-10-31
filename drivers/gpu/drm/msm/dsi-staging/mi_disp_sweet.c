@@ -8,6 +8,7 @@
 #include <linux/poll.h>
 #include <linux/rwsem.h>
 #include <linux/slab.h>
+#include <linux/string.h>
 #include <linux/uaccess.h>
 #include <linux/workqueue.h>
 #include "dsi_display.h"
@@ -530,7 +531,10 @@ int mi_disp_sweet_register(struct dsi_display *display)
 	struct mi_disp_sweet *ctx;
 	int rc = 0;
 
-	if (display != get_main_display())
+	if (!display || !display->panel || !display->display_type)
+		return -EINVAL;
+	/* Connector registration precedes mode enumeration on cold boot. */
+	if (strcmp(display->display_type, "primary"))
 		return 0;
 	mutex_lock(&mi_registry_lock);
 	if (mi_primary)
@@ -613,3 +617,4 @@ void mi_disp_sweet_unregister(struct dsi_display *display)
 unlock:
 	mutex_unlock(&mi_registry_lock);
 }
+
