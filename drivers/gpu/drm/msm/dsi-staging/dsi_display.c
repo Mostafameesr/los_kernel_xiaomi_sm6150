@@ -5237,6 +5237,11 @@ static int dsi_display_apply_panel_setting(struct dsi_display *display,
 
 	mutex_lock(&display->display_lock);
 	mutex_lock(&panel->panel_lock);
+	/* Value zero is a legacy sentinel, including while the panel is off. */
+	if (setter == dsi_panel_set_legacy_doze && !value) {
+		rc = setter(panel, value);
+		goto unlock;
+	}
 	if (!dsi_panel_initialized(panel)) {
 		if (setter == dsi_panel_set_hbm_mode)
 			rc = setter(panel, value);

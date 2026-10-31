@@ -5179,6 +5179,9 @@ int dsi_panel_set_legacy_doze(struct dsi_panel *panel, int brightness)
 	enum dsi_doze_mode_type mode;
 	int rc;
 
+	/* Legacy DOZE_BRIGHTNESS_INVALID carries no panel command. */
+	if (!brightness)
+		return 0;
 	if (brightness == 3) {
 		rc = dsi_panel_set_doze_status(panel, false);
 		if (!rc && panel->in_aod)
